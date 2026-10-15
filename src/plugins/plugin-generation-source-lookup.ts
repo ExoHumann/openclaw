@@ -42,9 +42,19 @@ export async function withPluginGenerationSourceCustody<T>(run: () => Promise<T>
   if (sourceCustody.getStore()) {
     return await run();
   }
-  await using scope = {
+  const scope = createPluginGenerationSourceCustody();
+  try {
+    return await scope.run(run);
+  } finally {
+    await scope.disposeAsync();
+  }
+}
+
+/** A preparation worker retains this same owner across its sequential loader tasks. */
+export function createPluginGenerationSourceCustody() {
+  const scope = {
     sources: new Map<string, SourceCustody>(),
-    async [Symbol.asyncDispose]() {
+    async disposeAsync() {
       const results = await Promise.allSettled(
         [...this.sources.values()].map(({ source }) => source.disposeAsync()),
       );
@@ -54,9 +64,13 @@ export async function withPluginGenerationSourceCustody<T>(run: () => Promise<T>
       if (errors.length) {
         throw new AggregateError(errors, "Plugin source custody cleanup failed");
       }
+      this.sources.clear();
     },
   };
-  return await sourceCustody.run(scope, run);
+  return {
+    run: <T>(run: () => T): T => sourceCustody.run(scope, run),
+    disposeAsync: () => scope.disposeAsync(),
+  };
 }
 
 /** Bind scoped file custody around an instance's independently constructed module graph. */
