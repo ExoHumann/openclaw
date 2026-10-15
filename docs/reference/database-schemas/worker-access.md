@@ -50,6 +50,12 @@ and the agent's
 The lifecycle owner closes its read scope and drains accepted writes before
 retiring the store.
 
+Retained session-entry cache hits reuse the admission owner's physical identity
+without inspecting the pathname again. Observer reads rely on that same admitted
+reader instead of capturing and rechecking every candidate file independently.
+Committed writes still invalidate retained entries; config routing, native-open
+replacement detection, and live disclosure authority remain with their owners.
+
 Complete single-statement effects can use SQLite autocommit through
 `runSqliteSingleStatementSync`. Prepare the result, admission, and commit receipt
 before the statement, then install committed facts before notifying observers.
@@ -76,6 +82,11 @@ refresh drops cached rows, and maintenance, artifact-preserving, pinned-snapshot
 and worker-owned reads retain their own custody. In-place writes from another process
 are unsupported while the Gateway owns the database. Credential effects still check
 current published credential authority at the fetch boundary without reading SQL.
+
+Ordinary auth helpers supply a native read-only opener to the auth reader pool.
+The artifact-preserving opener is imported on demand for inspection reads, keeping
+parent-side snapshot orchestration out of ordinary auth loading. Handle admission,
+reuse, and retirement remain owned by the pool.
 
 Generic scoped SQLite reads share at most four process slots, matched by captured
 runtime generation, environment, working directory, and spawn-broker owner.
@@ -293,8 +304,10 @@ remain with the history owner. See
 [`session-actor.worker.ts`](https://github.com/openclaw/openclaw/blob/main/src/config/sessions/session-actor.worker.ts)
 and [`session-actor-replica.ts`](https://github.com/openclaw/openclaw/blob/main/src/config/sessions/session-actor-replica.ts).
 
-Durable actor residency retains narrow navigation and exact byte accounting,
-not settled append bodies. Full bodies stay in SQLite and committed append
+Durable actor residency retains only tree links (`type`, `id`, `parentId`,
+`targetId`, `appendParentId`, and `appendMode`) and exact byte accounting.
+Cold hydration projects those fields in SQL; model-context navigation belongs
+to the history reader. Full bodies stay in SQLite and committed append
 receipts; retries read canonical storage when their payload is no longer in the
 current transaction. Actor append slow-hold warnings include `context.payloadBytes`,
 the UTF-8 size of the primary prepared event or message payload (summed message
@@ -583,16 +596,27 @@ and eviction return to the canonical readers.
 
 ## Session and ancillary worker operations
 
-Bounded transcript hydration retains its result in the existing session actor
-replica. Complete active paths advance from committed append receipts, including
-the stored payload byte lengths; repeated bounded-context reads can then use that
-replica without another history-worker request. Durable append receipts omit full
-transcript indexes and per-event byte tables; selected anchors and retry history
-stay with their canonical readers. Incomplete windows,
-capacity overflow, content rewrites, rewinds, compaction, archive changes, and deletion
-return to the canonical reader. The projection shares the actor's eviction and
-write-receipt invalidation lifecycle and does not change schemas, stored formats,
-retention, or update behavior.
+Bounded transcript hydration seeds the existing session actor replica from a
+canonical worker snapshot. Complete active paths and supported linear windows
+advance from committed append deltas, including stored payload byte lengths.
+Durable append receipts remain proportional to appended events; they omit full
+transcript indexes, per-event byte tables, and retry history. The Gateway retains
+selected positive anchors from hydration and append receipts. A missing anchor
+is unknown, so requests for it use the canonical reader.
+
+A context window retains its header and at most the requested event limit plus
+128 rows, with a stored-byte limit of the requested byte limit plus 512 KiB,
+including the header. Reads still honor the caller's original limits. The separate
+committed tail retains at most 128 events and 512 KiB; selected anchors retain at
+most 128 entries and 128 KiB of estimated memory. These bounded facts share the
+actor's eviction and write-receipt invalidation lifecycle.
+
+Covered prompt-metadata rewrites that preserve admission and navigation can
+update retained windows from their receipt rows. Cold or evicted facts,
+unsupported paths or boundary projections, admissions outside retained coverage,
+and uncovered rewrites use the canonical reader. Content edits, resets, rewinds,
+compaction, archive changes, and deletion invalidate retained context. Schemas,
+stored formats, retention, and update behavior are unchanged.
 
 Metadata-only lifecycle commits publish the resident actor's updated entry while
 retaining its transcript. Participant changes keep transcript payloads private
@@ -608,7 +632,7 @@ transaction; the main-thread replica installs those rows without another worker
 read. This includes an identical model-prompt capture after hydration. Rollback
 leaves stored messages unchanged and retains the database owner's failed-write
 cache invalidation. Cold actors, content or topology changes, unknown writes,
-and byte-limit overflow retain the canonical reader. No extra receipt,
+and insufficient retained coverage use the canonical reader. No extra receipt,
 freshness query, permission grant, or stored format is introduced.
 
 Trajectory append and retention writers publish the session and trajectory
@@ -649,6 +673,13 @@ worker when initializer rollback or harness cleanup is present; initializer
 rollback is consumed only after the committed receipt. Opaque harness cleanup is
 deprecated and runs after commit, with failures reported as warnings.
 
+Saved session-send recovery discovers current sessions with unconsumed queued or
+interrupted inputs in one metadata query per store through the existing session
+reader. It opens bounded input history only for those candidates. The history
+owner still reconciles lost queued-input custody, and delivery still checks
+current endpoints and communication permissions before dispatch. New inputs
+accepted after discovery belong to their ordinary live delivery owner.
+
 Released synchronous SDK readers and cross-store authorization checks remain
 explicitly counted. Incognito reads memory actor state without SQL. Cross-store checks protect
 visibility, membership, and conversation authority that the destination worker
@@ -674,6 +705,10 @@ Scheduled cron runs reuse the job loaded by their queue transaction when claimin
 and activating work. One conflict-safe receipt insert claims both the request ID
 and the active job slot through their unique indexes; only rejected requests read
 an existing receipt to report duplicates and repair consumed scheduled slots.
+Startup and clock-jump catch-up mutate the scheduler command's already-loaded
+jobs instead of rereading them for IDs and again for runtime mutation. Each new
+command loads current rows; catch-up preserves intervening in-process edits and
+persisted future retries. Execution authority is loaded at queue admission.
 The scheduler claims and activates due runs
 in one worker command using its loaded job postimages. Fresh claims persist the
 running state directly; capacity-limited runs retain their queued state and FIFO
@@ -1803,12 +1838,17 @@ FIFO, refusal, timeout, stored data, and update behavior are unchanged.
 A cold actor read hydrates its entry, participants, membership, pending-input
 custody, and transcript metadata in one autocommit statement. A cold phase
 command uses that same statement inside its own write transaction, without a
-preceding read request. The versioned hot state
-includes exact anchors, idempotency identities, model-context membership, and
-the entry's lifecycle, recovery, and final-delivery fields. Anchor availability
-is explicit when the display projection is unready. When canonical facts
-cannot prove model context, it remains explicitly unavailable; an empty context
-is a different result. Payload history keeps its existing reader. Hydration and
+preceding read request. Transcript navigation, identities, and active rows are
+limited to a 512-row tail window, also retained after each commit. The append
+owner carries sequence, rewrite watermark, and index-state facts independently
+of that window. Identities and retry keys not retained in a partial window use
+their indexed readers; full-tree history and branch resolution stay with the
+history reader. Partial windows never publish complete context metadata or
+claim historical absence. The versioned hot state carries the entry's lifecycle,
+recovery, and final-delivery fields, transcript watermarks, and complete
+projection facts when available. Anchor and model-context availability remain
+explicit; unavailable context differs from an empty context. Payload history
+keeps its existing reader. Hydration and
 actor reads reuse process-wide schema and integrity admission without new format
 checks or foreign-commit probes.
 
@@ -1833,6 +1873,15 @@ boundary. Compositions retain actor lifetime across asynchronous work, while
 individual commands acquire their own FIFO turn. No transaction awaits a hook,
 network operation, or another actor command.
 
+Input admission records the running lifecycle identity with its existing durable
+checkpoint. Lifecycle start reuses that committed marker for the same unfinished
+run instead of rewriting the session node and window. Source-less turns still
+persist their start, and a resumed run with a recorded end time starts a new
+timing interval. After a crash, an admitted run can retain its admission timestamp
+rather than its later model-start timestamp; terminal settlement still persists
+the completed timing and outcome before publication. Approval and external-effect
+checkpoints retain their existing owners and durability.
+
 Durable commands fork the resident state's small mutable object shells and share
 unchanged rows and payloads. A map or navigation array is shallow-copied on its
 first write; stored rows and payloads are replaced rather than edited. Rollback
@@ -1845,8 +1894,10 @@ reads installed facts; an ordered read joins the existing physical writer FIFO
 and requests actor state only on a miss. Commit receipts identify the command,
 phase, and before/after version, and install before command acknowledgement.
 Worker transport already detaches these internal postimages. Settlement and
-replica installation share them without another deep freeze or copy; internal
-borrowers treat snapshots and receipts as read-only and copy before editing.
+replica installation share them without another copy. Installation freezes the
+entry facts exposed to shared readers; the complete transcript graph is not
+deep-frozen. Internal borrowers treat snapshots and receipts as read-only and
+copy before editing.
 Replica residency uses an approximate heap budget based on string lengths and
 object/slot overhead, without serializing postimages or transcript bodies just
 to count bytes. The 128-snapshot and 8 MiB LRU limits retain one oversized
@@ -1892,8 +1943,11 @@ repeat a revision check inside this synchronous owner.
 
 Phase C entry readers share this bounded MAIN residency. Eligible exact-entry
 and ordered-cohort reads reuse complete actor state or its entry-only projection;
-a cold miss loads the requested entries in one existing worker batch. Complete
-entry commit receipts refresh the entry projection without claiming transcript,
+a cold miss loads the requested entries in one existing worker batch. Retained
+entry facts are frozen and shared, including selected prompt snapshots and sharing
+records. Mutable turn and workspace owners make shallow working copies when they
+adopt these facts; the public SDK detaches its mutable result at its own boundary.
+Complete entry commit receipts refresh the entry projection without claiming transcript,
 membership, or pending-input coverage. Missing ancillary facts still use the
 existing reader. Scoped receipt counters keep unrelated session writes from
 evicting resident entries, while a before/after write-token check preserves one
@@ -5053,6 +5107,19 @@ the write remain queued for the next flush. Incognito uses the memory actor;
 maintenance scopes and already executing workers keep their native kernel. Event bytes, ordering,
 retention limits, schemas, and update behavior are unchanged.
 
+The host retains the last trajectory session's next sequence and retained UTF-8 byte
+count per physical execution owner. It passes these facts through the existing
+append request inside the writer FIFO, consumes them before awaiting the write,
+and installs the returned committed facts before releasing that FIFO. An unknown
+append outcome leaves the next request cold. Metadata-only session notifications,
+including run-start and run-end liveness notices, preserve these facts. Lifecycle
+row publications and explicit storage invalidations discard them; retention
+invalidates them inside its existing writer operation.
+Ordinary under-budget appends need no window read. Cold appends and actual overflow
+retain the SQL-side byte projection and bounded suffix scan. An hourly retention
+sweep may make the next append cold even when it deletes nothing. Exclusive
+Doctor/CLI repairs run outside this runtime cache's owner lifetime.
+
 Successful embedded attempts defer their final diagnostic flush to the logical-turn
 lifecycle owner, which appends the accepted `session.ended` event to the same batch.
 Failed attempts and retry boundaries still flush diagnostic progress; replacing an
@@ -5643,9 +5710,14 @@ existing session reclamation worker. The host retains live descendant, media,
 and lifecycle authority; the worker compares the durable descendant rows after
 that grant and before committing. Registry preparation preserves unpublished
 intent and current live objects without treating a stale resident snapshot as
-fresh durable state. Reaper maintenance uses the existing compact subagent
-projection and owner-published changes at its final host grant. It does not repeat
-the registry scan inside the session worker.
+fresh durable state. Reaper maintenance admits one complete compact subagent
+protection snapshot, supplied by registry restore or one cold worker read.
+Committed registry postimages, deletions, and replacements maintain that snapshot;
+later maintenance passes do not reload unchanged rows. The final host grant still
+captures current protection and checks cleanup authority. Cold reads keep the
+SQL projection that excludes retained task and reply payloads. Maintenance reads
+bypass inspection snapshots, and database retirement invalidates resident facts.
+The session worker does not repeat the registry scan.
 The batch keeps one synchronous transaction and the existing archive,
 publication, rollback, and uncertain-outcome owners. Native harness mutation
 objects remain with their process-held owner. No cross-database atomicity,
