@@ -10,9 +10,7 @@ import type {
 } from "../plugins/types.js";
 import {
   resolvePluginWebFetchProviders,
-  resolvePluginWebFetchProvidersAsync,
   resolveRuntimeWebFetchProviders,
-  resolveRuntimeWebFetchProvidersAsync,
 } from "../plugins/web-fetch-providers.runtime.js";
 import { getActiveRuntimeWebToolsMetadataFromState } from "../secrets/runtime-web-tools-state.js";
 import type { RuntimeWebFetchMetadata } from "../secrets/runtime-web-tools.types.js";
@@ -23,6 +21,8 @@ import {
   resolveWebProviderConfig,
   type WebProviderWithCredential,
 } from "../web/provider-runtime-shared.js";
+
+type WebFetchConfig = NonNullable<NonNullable<OpenClawConfig["tools"]>["web"]>["fetch"];
 
 type ResolveWebFetchDefinitionParams = {
   config?: OpenClawConfig;
@@ -143,39 +143,13 @@ function resolveWebFetchProvidersForOptions(
 export function resolveWebFetchDefinition(
   options?: ResolveWebFetchDefinitionParams,
 ): WebFetchDefinitionResolution {
-  const fetch = resolveWebProviderConfig(options?.config, "fetch");
+  const fetch = resolveWebProviderConfig(options?.config, "fetch") as WebFetchConfig;
   if (fetch?.enabled === false) {
     return null;
   }
-  return selectWebFetchDefinition(options, resolveWebFetchProvidersForOptions(options));
-}
-
-/** Resolve cold providers without blocking the Gateway during external source capture. */
-export async function resolveWebFetchDefinitionAsync(
-  options?: ResolveWebFetchDefinitionParams,
-): Promise<WebFetchDefinitionResolution> {
-  const fetch = resolveWebProviderConfig(options?.config, "fetch");
-  if (fetch?.enabled === false) {
-    return null;
-  }
-  // The resolver owns generation/cache reuse. Do not retain request-owned provider
-  // callables in a separate process-wide asynchronous cache.
-  const providers = await (options?.preferRuntimeProviders && !options.sandboxed
-    ? resolveRuntimeWebFetchProvidersAsync({ config: options.config })
-    : resolvePluginWebFetchProvidersAsync({
-        config: options?.config,
-        ...(options?.sandboxed ? { sandboxed: true } : {}),
-      }));
-  return selectWebFetchDefinition(options, sortPluginEntriesForAutoDetect(providers));
-}
-
-function selectWebFetchDefinition(
-  options: ResolveWebFetchDefinitionParams | undefined,
-  providers: PluginWebFetchProviderEntry[],
-): WebFetchDefinitionResolution {
-  const fetch = resolveWebProviderConfig(options?.config, "fetch");
   const runtimeWebFetch =
     options?.runtimeWebFetch ?? getActiveRuntimeWebToolsMetadataFromState()?.fetch;
+  const providers = resolveWebFetchProvidersForOptions(options);
   if (providers.length === 0) {
     return null;
   }
@@ -193,7 +167,7 @@ function selectWebFetchDefinition(
   }
   const definition = provider.createTool({
     config: options?.config,
-    fetchConfig: fetch,
+    fetchConfig: fetch as Record<string, unknown> | undefined,
     runtimeMetadata: runtimeWebFetch,
   });
   return definition ? { provider, definition } : null;

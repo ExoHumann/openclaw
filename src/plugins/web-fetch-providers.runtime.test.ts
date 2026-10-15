@@ -297,7 +297,7 @@ describe("resolvePluginWebFetchProviders", () => {
       candidates: [],
       diagnostics: [],
       installRecords: {},
-      registryPath: path.resolve("/tmp/openclaw-home/.openclaw/state/openclaw.sqlite"),
+      registryPath: "/tmp/openclaw-home/.openclaw/state/openclaw.sqlite",
     });
     const { logger, ...loadOptions } = firstPluginLoadOptions(loadOpenClawPluginsMock);
     expect(Object.keys(logger ?? {}).toSorted()).toEqual(["debug", "error", "info", "warn"]);

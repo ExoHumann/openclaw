@@ -165,8 +165,8 @@ const WebFetchOutputSchema = Type.Object(
 
 type WebFetchConfig = NonNullable<NonNullable<OpenClawConfig["tools"]>["web"]>["fetch"];
 type ResolveWebFetchDefinition =
-  (typeof import("../../web-fetch/runtime.js"))["resolveWebFetchDefinitionAsync"];
-type WebFetchProviderFallback = Awaited<ReturnType<ResolveWebFetchDefinition>>;
+  (typeof import("../../web-fetch/runtime.js"))["resolveWebFetchDefinition"];
+type WebFetchProviderFallback = ReturnType<ResolveWebFetchDefinition>;
 const loadWebFetchRuntime = createLazyPromise(() => import("../../web-fetch/runtime.js"));
 const loadWebGuardedFetch = createLazyPromise(() => import("./web-guarded-fetch.js"));
 
@@ -882,15 +882,13 @@ export function createWebFetchTool(options?: {
         { min: FETCH_MAX_RESPONSE_BYTES_MIN, max: FETCH_MAX_RESPONSE_BYTES_MAX },
       );
       const resolveProviderFallback = createLazyPromise(async () => {
-        const { resolveWebFetchDefinitionAsync } = await loadWebFetchRuntime();
-        const resolved = await resolveWebFetchDefinitionAsync({
+        const { resolveWebFetchDefinition } = await loadWebFetchRuntime();
+        return resolveWebFetchDefinition({
           config,
           sandboxed: options?.sandboxed,
           runtimeWebFetch,
           preferRuntimeProviders,
         });
-        assertCurrent();
-        return resolved;
       });
       const params = args as Record<string, unknown>;
       const url = sanitizeWebFetchUrl(

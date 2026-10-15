@@ -7,11 +7,7 @@ import { resolveDefaultModelForAgent } from "../agents/model-selection-config.js
 import { resolveAllowedModelRefCore } from "../agents/model-selection-resolve.js";
 import { resolveCompatibleRuntimePluginRegistry } from "./active-runtime-registry.js";
 import { createPluginCapabilityCatalogContext } from "./capability-catalog-context.js";
-import {
-  isPluginRegistryCacheEnabled,
-  isPluginRegistryLoadInFlight,
-  resolvePluginRegistryLoadCacheKey,
-} from "./loader-cache.js";
+import { isPluginRegistryLoadInFlight } from "./loader-cache.js";
 import {
   loadOpenClawPluginsCore,
   loadOpenClawPluginsSteps,
@@ -111,44 +107,11 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   return loadOpenClawPluginsCore(options, loaderBindings);
 }
 
-// Pending work belongs to the same inventory as completed registry reuse. Waiters
-// re-enter the ordinary loader so their own activation/error policy still applies.
-const pendingRegistryLoads = new WeakMap<
-  ReturnType<typeof getPluginCache>,
-  Map<string, Promise<void>>
->();
-
 /** Keep network callbacks responsive without publishing a partially registered generation. */
 export async function loadOpenClawPluginsAsync(
   options: PluginLoadOptions = {},
 ): Promise<PluginRegistry> {
-  if (
-    options.previousRegistry ||
-    options.borrowRegistry ||
-    options.moduleRecoveries ||
-    !isPluginRegistryCacheEnabled(options)
-  ) {
-    return runPluginLoadStepsAsync(loadOpenClawPluginsSteps(options, loaderBindings));
-  }
-  const cache = getPluginCache();
-  let pending = pendingRegistryLoads.get(cache);
-  if (!pending) {
-    pending = new Map();
-    pendingRegistryLoads.set(cache, pending);
-  }
-  const key = resolvePluginRegistryLoadCacheKey(options);
-  while (pending.has(key)) {
-    await pending.get(key);
-  }
-  const loading = runPluginLoadStepsAsync(loadOpenClawPluginsSteps(options, loaderBindings));
-  const completion = loading
-    .then(
-      () => undefined,
-      () => undefined,
-    )
-    .finally(() => pending.delete(key));
-  pending.set(key, completion);
-  return loading;
+  return runPluginLoadStepsAsync(loadOpenClawPluginsSteps(options, loaderBindings));
 }
 
 async function runPluginLoadStepsAsync(

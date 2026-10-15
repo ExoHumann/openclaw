@@ -14,9 +14,8 @@ const { fetchWithWebToolsNetworkGuardMock, resolveWebFetchDefinitionMock } = vi.
 vi.mock("./web-guarded-fetch.js", () => ({
   fetchWithWebToolsNetworkGuard: fetchWithWebToolsNetworkGuardMock,
 }));
-// mock-isolation: Keep output-contract tests isolated from plugin discovery and filesystem preparation.
 vi.mock("../../web-fetch/runtime.js", () => ({
-  resolveWebFetchDefinitionAsync: resolveWebFetchDefinitionMock,
+  resolveWebFetchDefinition: resolveWebFetchDefinitionMock,
 }));
 
 import { createWebFetchTool } from "./web-fetch.js";

@@ -1,8 +1,6 @@
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferredCore } from "../shared/deferred.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
-import { createPluginCache, getPluginCache, withPluginCache } from "./plugin-cache.js";
 import { createPluginManifestRecordFixture } from "./plugin-metadata.test-support.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.js";
@@ -12,8 +10,6 @@ import type { WebProviderRuntimeResolution } from "./web-provider-runtime-shared
 const mocks = vi.hoisted(() => ({
   isPluginRegistryLoadInFlight: vi.fn(() => false),
   loadOpenClawPlugins: vi.fn(),
-  loadOpenClawPluginsAsync: vi.fn(),
-  getCurrentPluginToolInspection: vi.fn(),
   resolveCompatibleRuntimePluginRegistry: vi.fn(),
   getLoadedRuntimePluginRegistry: vi.fn(),
   resolvePluginRegistryLoadCacheKey: vi.fn((options: unknown) => JSON.stringify(options)),
@@ -31,19 +27,12 @@ const mocks = vi.hoisted(() => ({
   })),
 }));
 
-// mock-isolation: Exercise selection and ownership with controlled registries; real preparation is covered by loader and fetch integration tests.
 vi.mock("./loader.js", () => ({
   isPluginRegistryLoadInFlight: mocks.isPluginRegistryLoadInFlight,
   loadOpenClawPlugins: mocks.loadOpenClawPlugins,
-  loadOpenClawPluginsAsync: mocks.loadOpenClawPluginsAsync,
   resolveCompatibleRuntimePluginRegistry: mocks.resolveCompatibleRuntimePluginRegistry,
   resolvePluginRegistryLoadCacheKey: mocks.resolvePluginRegistryLoadCacheKey,
   resolveRuntimePluginRegistry: mocks.resolveRuntimePluginRegistry,
-}));
-
-vi.mock("./tool-inspection-state.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./tool-inspection-state.js")>()),
-  getCurrentPluginToolInspection: mocks.getCurrentPluginToolInspection,
 }));
 
 vi.mock("./active-runtime-registry.js", async (importOriginal) => ({
@@ -60,8 +49,6 @@ vi.mock("./runtime/load-context.js", () => ({
   buildPluginRuntimeLoadOptions: mocks.buildPluginRuntimeLoadOptions,
   createPluginRuntimeLoaderLogger: mocks.createPluginRuntimeLoaderLogger,
 }));
-
-let resolvePluginWebProvidersAsync: typeof import("./web-provider-runtime-shared.js").resolvePluginWebProvidersAsync;
 
 let resolvePluginWebProviders: typeof import("./web-provider-runtime-shared.js").resolvePluginWebProviders;
 
@@ -89,16 +76,13 @@ function resolution(
 
 describe("web-provider-runtime-shared", () => {
   beforeAll(async () => {
-    ({ resolvePluginWebProviders, resolvePluginWebProvidersAsync } =
-      await import("./web-provider-runtime-shared.js"));
+    ({ resolvePluginWebProviders } = await import("./web-provider-runtime-shared.js"));
   });
 
   beforeEach(() => {
     mocks.isPluginRegistryLoadInFlight.mockReset();
     mocks.isPluginRegistryLoadInFlight.mockReturnValue(false);
     mocks.loadOpenClawPlugins.mockReset();
-    mocks.loadOpenClawPluginsAsync.mockReset();
-    mocks.getCurrentPluginToolInspection.mockReset();
     mocks.resolveCompatibleRuntimePluginRegistry.mockReset();
     mocks.getLoadedRuntimePluginRegistry.mockReset();
     mocks.getLoadedRuntimePluginRegistry.mockReturnValue(undefined);
@@ -444,82 +428,5 @@ describe("web-provider-runtime-shared", () => {
 
     expect(result).toEqual(["brave", "grok"]);
     expect(mocks.loadOpenClawPlugins).toHaveBeenCalledTimes(1);
-  });
-  it("discovers undeclared providers asynchronously in an incomplete request inventory", async () => {
-    const registry = createEmptyPluginRegistry();
-    const fallback = createEmptyPluginRegistry();
-    mocks.loadOpenClawPluginsAsync.mockResolvedValue(fallback);
-    const result = await withPluginRuntimeRegistryScope(registry, () =>
-      resolvePluginWebProvidersAsync(
-        { config: {} },
-        resolution({
-          resolveCandidatePluginIds: () => undefined,
-          mapRegistryProviders: ({ registry: selected }) =>
-            selected === fallback ? ["undeclared-fetch"] : [],
-        }),
-      ),
-    );
-    expect(result).toEqual(["undeclared-fetch"]);
-    expect(mocks.loadOpenClawPluginsAsync).toHaveBeenCalledTimes(1);
-    expect(mocks.loadOpenClawPlugins).not.toHaveBeenCalled();
-  });
-
-  it("keeps a complete empty async inventory authoritative", async () => {
-    const registry = createEmptyPluginRegistry();
-    const result = await withPluginRuntimeRegistryScope(registry, () =>
-      resolvePluginWebProvidersAsync(
-        { config: {}, manifestRecords: [] },
-        resolution({
-          resolveCandidatePluginIds: () => undefined,
-          mapRegistryProviders: () => [],
-        }),
-      ),
-    );
-    expect(result).toEqual([]);
-    expect(mocks.loadOpenClawPluginsAsync).not.toHaveBeenCalled();
-  });
-
-  it("keeps supplemental loading in its owner cache and rejects retired inspection results", async () => {
-    const cache = createPluginCache();
-    const manifest = createPluginManifestRecordFixture({ id: "external-fetch" });
-    let released = false;
-    const failure = new Error("Plugin tool inspection has been released");
-    const assertCurrent = vi.fn(() => {
-      if (released) {
-        throw failure;
-      }
-    });
-    mocks.getCurrentPluginToolInspection.mockReturnValue({
-      registry: createEmptyPluginRegistry(),
-      inspection: {
-        manifests: new Map(),
-        assertCurrent,
-        withSupplementalCache: <T>(run: () => T) => withPluginCache(cache, run),
-      },
-      loadContext: { manifestRegistry: { plugins: [manifest], diagnostics: [] } },
-    });
-    const completion = createDeferredCore<ReturnType<typeof createEmptyPluginRegistry>>();
-    mocks.loadOpenClawPluginsAsync.mockImplementation(() => {
-      expect(getPluginCache()).toBe(cache);
-      return completion.promise;
-    });
-    const mapRegistryProviders = vi.fn(() => ["external-fetch"]);
-    const loading = resolvePluginWebProvidersAsync(
-      {},
-      resolution({
-        resolveCandidatePluginIds: () => undefined,
-        mapRegistryProviders,
-      }),
-    );
-    try {
-      released = true;
-      completion.resolve(createEmptyPluginRegistry());
-      await expect(loading).rejects.toBe(failure);
-      expect(assertCurrent).toHaveBeenCalledOnce();
-      expect(mapRegistryProviders).not.toHaveBeenCalled();
-    } finally {
-      completion.resolve(createEmptyPluginRegistry());
-      await Promise.allSettled([loading]);
-    }
   });
 });

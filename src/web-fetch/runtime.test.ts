@@ -3,10 +3,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { PluginWebFetchProviderEntry } from "../plugins/types.js";
-import type {
-  ResolvePluginWebProvidersParams,
-  ResolveRuntimeWebProvidersParams,
-} from "../plugins/web-provider-runtime-shared.js";
 import type { RuntimeWebFetchMetadata } from "../secrets/runtime-web-tools.types.js";
 import { clearSecretsRuntimeSnapshot } from "../secrets/runtime.js";
 import { withEnv } from "../test-utils/env.js";
@@ -27,12 +23,8 @@ const {
   resolveRuntimeWebFetchProvidersMock,
 } = vi.hoisted(() => ({
   getActivePluginRegistryVersionMock: vi.fn(() => 1),
-  resolvePluginWebFetchProvidersMock: vi.fn<
-    (params?: ResolvePluginWebProvidersParams) => PluginWebFetchProviderEntry[]
-  >(() => []),
-  resolveRuntimeWebFetchProvidersMock: vi.fn<
-    (params?: ResolveRuntimeWebProvidersParams) => PluginWebFetchProviderEntry[]
-  >(() => []),
+  resolvePluginWebFetchProvidersMock: vi.fn<() => PluginWebFetchProviderEntry[]>(() => []),
+  resolveRuntimeWebFetchProvidersMock: vi.fn<() => PluginWebFetchProviderEntry[]>(() => []),
 }));
 
 vi.mock("../plugins/runtime.js", async (importOriginal) => {
@@ -43,14 +35,9 @@ vi.mock("../plugins/runtime.js", async (importOriginal) => {
   };
 });
 
-// mock-isolation: Test provider selection independently of plugin inventory discovery and preparation.
 vi.mock("../plugins/web-fetch-providers.runtime.js", () => ({
   resolvePluginWebFetchProviders: resolvePluginWebFetchProvidersMock,
-  resolvePluginWebFetchProvidersAsync: async (params: ResolvePluginWebProvidersParams) =>
-    resolvePluginWebFetchProvidersMock(params),
   resolveRuntimeWebFetchProviders: resolveRuntimeWebFetchProvidersMock,
-  resolveRuntimeWebFetchProvidersAsync: async (params: ResolveRuntimeWebProvidersParams) =>
-    resolveRuntimeWebFetchProvidersMock(params),
 }));
 
 function getFirecrawlApiKey(config?: OpenClawConfig): unknown {
@@ -423,56 +410,5 @@ describe("web fetch runtime", () => {
     });
 
     expect(requireResolvedWebFetch(resolved).provider.id).toBe("thirdparty");
-  });
-});
-
-describe("asynchronous web fetch definition", () => {
-  beforeEach(() => {
-    getActivePluginRegistryVersionMock.mockReset().mockReturnValue(1);
-    resolvePluginWebFetchProvidersMock.mockReset().mockReturnValue([]);
-    resolveRuntimeWebFetchProvidersMock.mockReset().mockReturnValue([]);
-  });
-  afterEach(() => {
-    clearSecretsRuntimeSnapshot();
-  });
-
-  it("keeps sandboxed async discovery on trusted providers when runtime providers are preferred", async () => {
-    const { resolveWebFetchDefinitionAsync } = await import("./runtime.js");
-    resolvePluginWebFetchProvidersMock.mockReturnValue([
-      createFirecrawlProvider({ getConfiguredCredentialValue: () => "bundled-key" }),
-    ]);
-    resolveRuntimeWebFetchProvidersMock.mockReturnValue([createThirdPartyFetchProvider()]);
-    const config = {};
-    const resolved = await resolveWebFetchDefinitionAsync({
-      config,
-      sandboxed: true,
-      preferRuntimeProviders: true,
-    });
-    expect(resolved?.provider.id).toBe("firecrawl");
-    expect(resolvePluginWebFetchProvidersMock).toHaveBeenCalledExactlyOnceWith({
-      config,
-      sandboxed: true,
-    });
-    expect(resolveRuntimeWebFetchProvidersMock).not.toHaveBeenCalled();
-  });
-
-  it("preserves configured selection after async discovery and avoids discovery when disabled", async () => {
-    const { resolveWebFetchDefinitionAsync } = await import("./runtime.js");
-    const selected = createThirdPartyFetchProvider();
-    resolveRuntimeWebFetchProvidersMock.mockReturnValue([createFirecrawlProvider(), selected]);
-    const resolved = await resolveWebFetchDefinitionAsync({
-      config: { tools: { web: { fetch: { provider: "thirdparty" } } } },
-      preferRuntimeProviders: true,
-    });
-    expect(resolved?.provider.id).toBe("thirdparty");
-    resolveRuntimeWebFetchProvidersMock.mockImplementation(() => {
-      throw new Error("disabled fetch must not discover providers");
-    });
-    await expect(
-      resolveWebFetchDefinitionAsync({
-        config: { tools: { web: { fetch: { enabled: false } } } },
-        preferRuntimeProviders: true,
-      }),
-    ).resolves.toBeNull();
   });
 });
