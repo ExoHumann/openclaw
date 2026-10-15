@@ -138,7 +138,13 @@ it("keeps captured files and recovery alive until their owning artifacts are rel
       const recovery = artifact.captureRecoverySource();
       await artifact.disposeAsync();
       expect(fs.readFileSync(recovery.resolve(entry), "utf8")).toContain("42");
+      const recoveredEntry = recovery.resolve(entry);
       await recovery.disposeAsync();
+      // Later rollback generations compose this path mapping after its producer retires.
+      expect(recovery.resolve(entry)).toBe(recoveredEntry);
+      expect(() => recovery.resolve(path.join(root, "outside.js"))).toThrow(
+        "Plugin recovery entry is outside its captured source package",
+      );
     }),
   );
 });

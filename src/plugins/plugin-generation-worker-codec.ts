@@ -1,4 +1,9 @@
 import {
+  restorePluginRecoverySourceResolver,
+  snapshotPluginRecoverySourceResolver,
+  type PluginRecoverySourceResolverSnapshot,
+} from "./plugin-generation-source-lookup.js";
+import {
   isOwnedPluginNativeRecovery,
   restorePluginNativeRecovery,
   snapshotPluginNativeRecovery,
@@ -10,13 +15,14 @@ export type GenerationWireValue =
   | { kind: "reference"; id: number }
   | { kind: "remote"; id: number }
   | { kind: "function"; id: number; asynchronous: boolean }
+  | { kind: "source-resolver"; id: number; snapshot: GenerationWireValue }
   | { kind: "object"; id: number; entries: [string, GenerationWireValue][] }
   | { kind: "array" | "set"; id: number; entries: GenerationWireValue[] }
   | { kind: "map"; id: number; entries: [GenerationWireValue, GenerationWireValue][] }
   | { kind: "url"; id: number; value: string }
   | { kind: "native"; id: number; snapshot: GenerationWireValue };
 
-/** Internal owner-to-owner codec. Functions remain in their producing isolate. */
+/** Internal owner-to-owner codec. Stateful functions remain in their producing isolate. */
 export class GenerationCodec {
   private next = 0;
   private readonly handles = new Map<number, object>();
@@ -53,6 +59,10 @@ export class GenerationCodec {
     }
     seen.add(value);
     if (typeof value === "function") {
+      const snapshot = snapshotPluginRecoverySourceResolver(value);
+      if (snapshot) {
+        return { kind: "source-resolver", id, snapshot: this.encode(snapshot, seen) };
+      }
       return {
         kind: "function",
         id,
@@ -112,6 +122,10 @@ export class GenerationCodec {
     let result: object;
     if (value.kind === "function") {
       result = (...args: unknown[]) => this.invoke(value.id, args, value.asynchronous);
+    } else if (value.kind === "source-resolver") {
+      result = restorePluginRecoverySourceResolver(
+        this.decode(value.snapshot) as PluginRecoverySourceResolverSnapshot,
+      );
     } else if (value.kind === "url") {
       result = new URL(value.value);
     } else if (value.kind === "native") {
@@ -129,7 +143,9 @@ export class GenerationCodec {
       result = {};
     }
     this.received.set(value.id, result);
-    this.remote.set(result, value.id);
+    if (value.kind !== "source-resolver") {
+      this.remote.set(result, value.id);
+    }
     if (value.kind === "object") {
       for (const [key, entry] of value.entries) {
         Object.defineProperty(result, key, {

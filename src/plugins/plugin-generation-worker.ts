@@ -11,6 +11,7 @@ import type {
   GenerationWorkerReply,
   GenerationWorkerCallback,
 } from "./plugin-generation-worker-contract.js";
+import { PluginSourceRecoveryUnavailableError } from "./plugin-instance-error.js";
 import {
   adoptPluginNativeAdmissions,
   nativeAdmissionStateFor,
@@ -135,7 +136,12 @@ function createPreparationClient() {
   function accept(reply: GenerationWorkerReply): unknown {
     resources = reply.resources;
     if ("error" in reply) {
-      throw Object.assign(new Error(reply.error.message), reply.error);
+      // Reload recovery distinguishes unavailable old source from fatal preparation errors.
+      const error =
+        reply.error.name === "PluginSourceRecoveryUnavailableError"
+          ? new PluginSourceRecoveryUnavailableError(undefined)
+          : new Error(reply.error.message);
+      throw Object.assign(error, reply.error);
     }
     if (reply.admission) {
       adoptPluginNativeAdmissions(

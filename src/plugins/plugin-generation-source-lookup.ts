@@ -168,6 +168,27 @@ function getCapturedSource(
   return sources.get(lexical) ?? sources.get(canonicalSource(rootDir, sourceRoot, lexical));
 }
 
+export type PluginRecoverySourceResolverSnapshot = {
+  rootDir: string;
+  sourceRoot: string;
+  sources: ReadonlyMap<string, string>;
+};
+const recoverySourceResolvers = new WeakMap<object, PluginRecoverySourceResolverSnapshot>();
+
+/** Transfer only immutable lookup facts, never a call back into a retired source owner. */
+export function snapshotPluginRecoverySourceResolver(
+  resolve: object,
+): PluginRecoverySourceResolverSnapshot | undefined {
+  const snapshot = recoverySourceResolvers.get(resolve);
+  return snapshot && { ...snapshot, sources: new Map(snapshot.sources) };
+}
+
+export function restorePluginRecoverySourceResolver(
+  snapshot: PluginRecoverySourceResolverSnapshot,
+) {
+  return createRecoverySourceResolver(snapshot.rootDir, snapshot.sourceRoot, snapshot.sources);
+}
+
 // A recovery resolver outlives its producer. Its closure contains copied path
 // facts, never the producer's availability callback or live captured graph.
 function createRecoverySourceResolver(
@@ -175,13 +196,16 @@ function createRecoverySourceResolver(
   sourceRoot: string,
   sources: ReadonlyMap<string, string>,
 ) {
-  return (source: string) => {
-    const captured = getCapturedSource(sources, rootDir, sourceRoot, source);
+  const snapshot = { rootDir, sourceRoot, sources: new Map(sources) };
+  const resolve = (source: string) => {
+    const captured = getCapturedSource(snapshot.sources, rootDir, sourceRoot, source);
     if (!captured) {
       throw new Error("Plugin recovery entry is outside its captured source package");
     }
     return captured;
   };
+  recoverySourceResolvers.set(resolve, snapshot);
+  return resolve;
 }
 
 export type PluginRecoverySource = {
