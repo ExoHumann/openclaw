@@ -121,42 +121,67 @@ it("publishes native admission to pinned install roots while capture storage is 
   });
 });
 
-it("keeps captured files and recovery alive until their owning artifacts are released", async () => {
-  const root = fs.realpathSync(temp.make("plugin-generation-worker-"));
-  const source = path.join(root, "source");
-  fs.mkdirSync(source);
-  fs.writeFileSync(
-    path.join(source, "package.json"),
-    JSON.stringify({ name: "worker-fixture", version: "1.0.0", type: "module" }),
-  );
-  const entry = path.join(source, "index.js");
-  fs.writeFileSync(entry, "export const value = 42;");
-  await withArtifactPreservingStateReads(() =>
-    withPluginSourceCaptureStorage({ stateDir: root, placement: "temporary" }, async () => {
-      const prepared = await preparePluginGenerationArtifact({ rootDir: source, source: entry });
-      prepared.attachModuleSource((filename) => filename);
-      const artifact = prepared.artifact;
-      expect(fs.readFileSync(artifact.resolve(entry), "utf8")).toContain("42");
-      const replies = Array.from({ length: 100 }, () => new WeakRef(artifact.prepareModule(entry)));
-      const control = new WeakRef({});
-      await nextTurn();
-      queryObjects(WeakRef);
-      expect(control.deref()).toBeUndefined();
-      expect(replies.every((reply) => reply.deref() === undefined)).toBe(true);
-      expect(fs.readFileSync(artifact.resolve(entry), "utf8")).toContain("42");
-      const recovery = artifact.captureRecoverySource();
-      await artifact.disposeAsync();
-      expect(fs.readFileSync(recovery.resolve(entry), "utf8")).toContain("42");
-      const recoveredEntry = recovery.resolve(entry);
-      await recovery.disposeAsync();
-      // Later rollback generations compose this path mapping after its producer retires.
-      expect(recovery.resolve(entry)).toBe(recoveredEntry);
-      expect(() => recovery.resolve(path.join(root, "outside.js"))).toThrow(
-        "Plugin recovery entry is outside its captured source package",
-      );
-    }),
-  );
-});
+it.each(["capture", "custody", "fork"] as const)(
+  "keeps %s recovery alive beyond the short RPC deadline and owner disposal",
+  async (operation) => {
+    const root = fs.realpathSync(temp.make("plugin-generation-worker-"));
+    const source = path.join(root, "source");
+    fs.mkdirSync(source);
+    fs.writeFileSync(
+      path.join(source, "package.json"),
+      JSON.stringify({ name: "worker-fixture", version: "1.0.0", type: "module" }),
+    );
+    const entry = path.join(source, "index.js");
+    fs.writeFileSync(entry, "export const value = 42;");
+    await withArtifactPreservingStateReads(() =>
+      withPluginSourceCaptureStorage({ stateDir: root, placement: "temporary" }, async () => {
+        const prepared = await preparePluginGenerationArtifact({ rootDir: source, source: entry });
+        prepared.attachModuleSource((filename) => filename);
+        const artifact = prepared.artifact;
+        expect(fs.readFileSync(artifact.resolve(entry), "utf8")).toContain("42");
+        if (operation === "capture") {
+          const replies = Array.from(
+            { length: 100 },
+            () => new WeakRef(artifact.prepareModule(entry)),
+          );
+          const control = new WeakRef({});
+          await nextTurn();
+          queryObjects(WeakRef);
+          expect(control.deref()).toBeUndefined();
+          expect(replies.every((reply) => reply.deref() === undefined)).toBe(true);
+          expect(fs.readFileSync(artifact.resolve(entry), "utf8")).toContain("42");
+        }
+        // Recovery copies the captured package synchronously in the worker. Advance
+        // its host deadline clock without making this lifecycle proof sleep for 30s.
+        const parentRecovery = operation === "fork" ? artifact.captureRecoverySource() : undefined;
+        const now = performance.now();
+        const clock = vi.spyOn(performance, "now").mockReturnValue(now + 30_001);
+        clock.mockReturnValueOnce(now);
+        let recovery: ReturnType<typeof artifact.captureRecoverySource>;
+        try {
+          recovery = parentRecovery
+            ? parentRecovery.fork()
+            : operation === "custody"
+              ? artifact.retainSourceCustody().source
+              : artifact.captureRecoverySource();
+        } finally {
+          clock.mockRestore();
+          await parentRecovery?.disposeAsync();
+        }
+        expect(fs.readFileSync(artifact.resolve(entry), "utf8")).toContain("42");
+        await artifact.disposeAsync();
+        expect(fs.readFileSync(recovery.resolve(entry), "utf8")).toContain("42");
+        const recoveredEntry = recovery.resolve(entry);
+        await recovery.disposeAsync();
+        // Later rollback generations compose this path mapping after its producer retires.
+        expect(recovery.resolve(entry)).toBe(recoveredEntry);
+        expect(() => recovery.resolve(path.join(root, "outside.js"))).toThrow(
+          "Plugin recovery entry is outside its captured source package",
+        );
+      }),
+    );
+  },
+);
 
 it("isolates an active artifact from a sibling capture waiting on host publication", async () => {
   const root = fs.realpathSync(temp.make("plugin-generation-worker-sibling-"));

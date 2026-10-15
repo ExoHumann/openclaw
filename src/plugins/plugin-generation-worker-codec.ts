@@ -1,4 +1,5 @@
 import {
+  isPluginSourceCaptureOperation,
   restorePluginRecoverySourceResolver,
   snapshotPluginRecoverySourceResolver,
   type PluginRecoverySourceResolverSnapshot,
@@ -14,7 +15,7 @@ export type GenerationWireValue =
   | { kind: "value"; value: unknown }
   | { kind: "reference"; id: number }
   | { kind: "remote"; id: number }
-  | { kind: "function"; id: number; asynchronous: boolean }
+  | { kind: "function"; id: number; asynchronous: boolean; sourceCapture: boolean }
   | { kind: "source-resolver"; id: number; snapshot: GenerationWireValue }
   | { kind: "object"; id: number; entries: [string, GenerationWireValue][] }
   | { kind: "array" | "set"; id: number; entries: GenerationWireValue[] }
@@ -31,7 +32,12 @@ export class GenerationCodec {
   private readonly remote = new WeakMap<object, number>();
 
   constructor(
-    private readonly invoke: (handle: number, args: unknown[], asynchronous: boolean) => unknown,
+    private readonly invoke: (
+      handle: number,
+      args: unknown[],
+      asynchronous: boolean,
+      sourceCapture: boolean,
+    ) => unknown,
     private readonly retainNativeRoot: (
       root: PluginNativeRecoverySnapshot["roots"][number],
     ) => void,
@@ -78,6 +84,7 @@ export class GenerationCodec {
         kind: "function",
         id,
         asynchronous: value.constructor.name === "AsyncFunction" || Boolean(key?.endsWith("Async")),
+        sourceCapture: isPluginSourceCaptureOperation(value),
       };
     }
     if (isOwnedPluginNativeRecovery(value)) {
@@ -134,7 +141,8 @@ export class GenerationCodec {
     }
     let result: object;
     if (value.kind === "function") {
-      result = (...args: unknown[]) => this.invoke(value.id, args, value.asynchronous);
+      result = (...args: unknown[]) =>
+        this.invoke(value.id, args, value.asynchronous, value.sourceCapture);
     } else if (value.kind === "source-resolver") {
       result = restorePluginRecoverySourceResolver(
         // SAFETY: the internal source-resolver encoder emits the lookup owner's snapshot.

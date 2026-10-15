@@ -1,6 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { queryObjects } from "node:v8";
 import { expect, it } from "vitest";
+import { markPluginSourceCaptureOperation } from "./plugin-generation-source-lookup.js";
 import { GenerationCodec } from "./plugin-generation-worker-codec.js";
 
 it("releases ordinary message graphs while retaining callable identity", async () => {
@@ -63,4 +64,34 @@ it("releases ordinary message graphs while retaining callable identity", async (
   expect(compare(argument, argument)).toBe(true);
   expect(receiver.decode(sender.encode(sameArgument))).toBe(compare);
   expect(sender.decode(receiver.encode(compare))).toBe(sameArgument);
+});
+
+it("keeps only owner-marked source copies outside the ordinary method deadline", () => {
+  const calls: boolean[] = [];
+  const sender = new GenerationCodec(
+    () => undefined,
+    () => {},
+  );
+  const receiver = new GenerationCodec(
+    (_handle, _args, _async, sourceCapture) => {
+      calls.push(sourceCapture);
+    },
+    () => {},
+  );
+  const ownerCopy = markPluginSourceCaptureOperation(() => undefined);
+  const original = {
+    captureRecoverySource: ownerCopy,
+    retainSourceCustody: ownerCopy,
+    recovery: { fork: ownerCopy },
+    fork: () => undefined,
+    resolve: () => undefined,
+  };
+  const decoded = receiver.decode(sender.encode(original)) as typeof original;
+  decoded.captureRecoverySource();
+  decoded.retainSourceCustody();
+  decoded.recovery.fork();
+  decoded.fork();
+  decoded.resolve();
+  expect(calls).toEqual([true, true, true, false, false]);
+  expect(decoded.captureRecoverySource).toBe(decoded.recovery.fork);
 });

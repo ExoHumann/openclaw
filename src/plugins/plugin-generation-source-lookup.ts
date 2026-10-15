@@ -20,6 +20,17 @@ import {
 } from "./plugin-package-metadata-capture.js";
 import type { PluginNativeArtifactFact } from "./plugin-source-admission.types.js";
 import type { PluginCapturedSourceFact } from "./plugin-source-verification.js";
+// These owner-defined operations copy captured source trees; their cost scales with
+// package size and filesystem latency rather than the ordinary method deadline.
+const sourceCaptureOperations = new WeakSet<object>();
+export function markPluginSourceCaptureOperation<T extends () => unknown>(operation: T): T {
+  sourceCaptureOperations.add(operation);
+  return operation;
+}
+export function isPluginSourceCaptureOperation(operation: object): boolean {
+  return sourceCaptureOperations.has(operation);
+}
+
 type SourceCustody = {
   source: PluginRecoverySource;
   files: ReadonlyMap<string, PluginCapturedSourceFact>;
@@ -276,7 +287,7 @@ function copyRecoverySource({
       sourceCapture,
       resolve: createRecoverySourceResolver(rootDir, sourceRoot, copiedSources),
       native,
-      fork() {
+      fork: markPluginSourceCaptureOperation(() => {
         if (disposed) {
           throw new Error("Plugin source recovery has been disposed");
         }
@@ -288,7 +299,7 @@ function copyRecoverySource({
           sources: copiedSources,
           native: native?.fork(),
         });
-      },
+      }),
       dispose() {
         if (!disposed) {
           disposed = true;
@@ -358,7 +369,7 @@ export function createPluginGenerationSourceLookup({
       assertModuleAvailable(captured);
       return captured;
     },
-    captureRecoverySource: () => {
+    captureRecoverySource: markPluginSourceCaptureOperation(() => {
       for (const captured of new Set(capturedPaths.values())) {
         assertModuleAvailable(captured);
       }
@@ -370,7 +381,7 @@ export function createPluginGenerationSourceLookup({
         sources: new Map(capturedPaths),
         native: captureNativeRecovery?.(),
       });
-    },
+    }),
   };
 }
 

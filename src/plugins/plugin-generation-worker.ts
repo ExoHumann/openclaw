@@ -120,14 +120,14 @@ function createPreparationClient() {
       }
     })());
   const codec = new GenerationCodec(
-    (handle, args, asynchronous) => {
+    (handle, args, asynchronous, sourceCapture) => {
       const command: GenerationWorkerInput = {
         operation: "call",
         handle,
         asynchronous,
         args: codec.encodeArguments(args),
       };
-      return asynchronous ? request(command) : requestSync(command);
+      return asynchronous ? request(command) : requestSync(command, sourceCapture);
     },
     () => {
       throw new Error("Host-owned native leases must return to their original owner");
@@ -184,7 +184,7 @@ function createPreparationClient() {
       }
     }
   }
-  function requestSync(command: GenerationWorkerInput): unknown {
+  function requestSync(command: GenerationWorkerInput, sourceCapture: boolean): unknown {
     if (closing) {
       throw new Error("Plugin preparation worker has closed");
     }
@@ -219,7 +219,9 @@ function createPreparationClient() {
     try {
       task = pool.startTask(
         { ...command, nativeLoads: [...pendingNativeLoads] },
-        { timeoutMs: 30_000 },
+        // Recovery and custody copies have the same owner-controlled lifetime as
+        // initial capture. Keep ordinary synchronous methods bounded.
+        sourceCapture ? {} : { timeoutMs: 30_000 },
       );
       pendingNativeLoads.clear();
       return accept(join(task));

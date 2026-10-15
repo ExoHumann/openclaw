@@ -4,7 +4,11 @@ import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-rea
 import { withPluginInstallRoots } from "./install-root-context.js";
 import { getPluginCache } from "./plugin-cache.js";
 import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
-import { createPluginGenerationSourceCustody } from "./plugin-generation-source-lookup.js";
+import {
+  createPluginGenerationSourceCustody,
+  markPluginSourceCaptureOperation,
+  type PluginRecoverySource,
+} from "./plugin-generation-source-lookup.js";
 import { GenerationCodec } from "./plugin-generation-worker-codec.js";
 import type {
   GenerationWorkerInput,
@@ -71,6 +75,15 @@ function own<T extends Resource>(resource: T): T {
     resources.delete(resource);
     orphaned.delete(resource);
   };
+  return resource;
+}
+function ownRecovery(resource: PluginRecoverySource): PluginRecoverySource {
+  if (owned.has(resource)) {
+    return resource;
+  }
+  own(resource);
+  const fork = resource.fork.bind(resource);
+  resource.fork = markPluginSourceCaptureOperation(() => ownRecovery(fork()));
   return resource;
 }
 const codec = new GenerationCodec(() => {
@@ -226,13 +239,15 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
             ),
           );
           const captureRecovery = artifact.captureRecoverySource.bind(artifact);
-          artifact.captureRecoverySource = () => own(captureRecovery());
+          artifact.captureRecoverySource = markPluginSourceCaptureOperation(() =>
+            ownRecovery(captureRecovery()),
+          );
           const retainCustody = artifact.retainSourceCustody.bind(artifact);
-          artifact.retainSourceCustody = () => {
+          artifact.retainSourceCustody = markPluginSourceCaptureOperation(() => {
             const custody = retainCustody();
-            own(custody.source);
+            ownRecovery(custody.source);
             return custody;
-          };
+          });
           failedCapture = artifact;
           result = artifact;
         } else if (command.operation === "call") {
