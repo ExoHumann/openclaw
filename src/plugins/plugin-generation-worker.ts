@@ -145,7 +145,9 @@ function createPreparationClient() {
       task = pool.startTask(
         { ...command, nativeLoads: [...pendingNativeLoads] },
         {
-          timeoutMs: 120_000,
+          // Capture cost scales with package size and filesystem latency. Its owner
+          // controls retirement; an arbitrary deadline can reject healthy plugins.
+          ...(command.operation === "capture" ? {} : { timeoutMs: 120_000 }),
           transferList: (value) =>
             value.operation === "capture" && value.callbackPort ? [value.callbackPort] : [],
         },

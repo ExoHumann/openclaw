@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
@@ -17,6 +17,61 @@ import { withPluginSourceAdmissionPublisher } from "./plugin-source-admission-st
 import { withPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
+
+it("finishes a capture after more than two minutes without retiring its worker", async () => {
+  const root = fs.realpathSync(temp.make("plugin-generation-worker-long-capture-"));
+  const fixture = createFixture(path.join(root, "installed"), false);
+  const roots = { ...resolvePluginInstallRoots(), stateDir: root };
+  const cache = createPluginCache();
+  let releasePublication!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    releasePublication = resolve;
+  });
+  let publicationStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    publicationStarted = resolve;
+  });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  try {
+    await withPluginCache(cache, () =>
+      withPluginInstallRoots(roots, () =>
+        withPluginSourceCaptureStorage({ stateDir: root, placement: "temporary" }, async () => {
+          preparePluginNativeAdmissions(fixture.index, cache);
+          const preparing = withPluginSourceAdmissionPublisher(
+            async () => {
+              publicationStarted();
+              await gate;
+              return false;
+            },
+            () => preparePluginGenerationArtifact({ rootDir: fixture.root, source: fixture.entry }),
+          );
+          // Observe rejection while the publication gate is held, then assert the result below.
+          void preparing.catch(() => {});
+          await started;
+          // Advance the real pool's task timer without sleeping for two minutes.
+          try {
+            await vi.advanceTimersByTimeAsync(120_001);
+            releasePublication();
+            const prepared = await preparing;
+            try {
+              expect(fs.readFileSync(prepared.artifact.resolve(fixture.entry), "utf8")).toContain(
+                "fixture",
+              );
+            } finally {
+              await prepared.artifact.disposeAsync();
+            }
+          } finally {
+            vi.useRealTimers();
+          }
+        }),
+      ),
+    );
+  } finally {
+    vi.useRealTimers();
+    releasePublication();
+    await retirePluginCache(cache);
+  }
+});
 
 it("publishes native admission to pinned install roots while capture storage is redirected", async () => {
   await withOpenClawTestState({ label: "worker-pinned-admission" }, async (state) => {
