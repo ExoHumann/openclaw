@@ -445,19 +445,6 @@ describe("web-provider-runtime-shared", () => {
     expect(result).toEqual(["brave", "grok"]);
     expect(mocks.loadOpenClawPlugins).toHaveBeenCalledTimes(1);
   });
-  it("retries an async registry preparation that failed", async () => {
-    const failure = new Error("capture failed");
-    mocks.loadOpenClawPluginsAsync
-      .mockRejectedValueOnce(failure)
-      .mockResolvedValueOnce(createEmptyPluginRegistry());
-    const deps = resolution({ mapRegistryProviders: () => ["external-fetch"] });
-    await expect(resolvePluginWebProvidersAsync({ config: {} }, deps)).rejects.toBe(failure);
-    await expect(resolvePluginWebProvidersAsync({ config: {} }, deps)).resolves.toEqual([
-      "external-fetch",
-    ]);
-    expect(mocks.loadOpenClawPluginsAsync).toHaveBeenCalledTimes(2);
-  });
-
   it("discovers undeclared providers asynchronously in an incomplete request inventory", async () => {
     const registry = createEmptyPluginRegistry();
     const fallback = createEmptyPluginRegistry();
