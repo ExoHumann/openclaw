@@ -20,7 +20,14 @@ import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createWebFetchTool } from "./web-fetch.js";
-import * as guardedFetch from "./web-guarded-fetch.js";
+const { fetchWithWebToolsNetworkGuardMock } = vi.hoisted(() => ({
+  fetchWithWebToolsNetworkGuardMock: vi.fn(),
+}));
+
+// mock-isolation: Force the network failure while retaining real provider discovery and preparation.
+vi.mock("./web-guarded-fetch.js", () => ({
+  fetchWithWebToolsNetworkGuard: fetchWithWebToolsNetworkGuardMock,
+}));
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -45,9 +52,7 @@ it("serves cold web-fetch fallbacks through worker preparation and reuses the ca
     plugins: { allow: [plugin.id], load: { paths: [plugin.file] }, slots: { memory: "none" } },
     tools: { web: { fetch: { provider: plugin.id, cacheTtlMinutes: 0 } } },
   };
-  vi.spyOn(guardedFetch, "fetchWithWebToolsNetworkGuard").mockRejectedValue(
-    new Error("fixture upstream unavailable"),
-  );
+  fetchWithWebToolsNetworkGuardMock.mockRejectedValue(new Error("fixture upstream unavailable"));
   const entered = createDeferredCore();
   const release = createDeferredCore();
   const prepare = preparation.preparePluginGenerationArtifact;
@@ -103,6 +108,7 @@ it("serves cold web-fetch fallbacks through worker preparation and reuses the ca
               expect(capture).toHaveBeenCalledTimes(1);
               const repeated = await invoke("cold-repeated");
               expect(repeated.details).toMatchObject({ extractor: "cold-fetch" });
+              expect(fetchWithWebToolsNetworkGuardMock).toHaveBeenCalledTimes(3);
               expect(capture).toHaveBeenCalledTimes(1);
             } finally {
               release.resolve();
