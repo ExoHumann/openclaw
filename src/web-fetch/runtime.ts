@@ -24,8 +24,6 @@ import {
   type WebProviderWithCredential,
 } from "../web/provider-runtime-shared.js";
 
-type WebFetchConfig = NonNullable<NonNullable<OpenClawConfig["tools"]>["web"]>["fetch"];
-
 type ResolveWebFetchDefinitionParams = {
   config?: OpenClawConfig;
   sandboxed?: boolean;
@@ -145,7 +143,7 @@ function resolveWebFetchProvidersForOptions(
 export function resolveWebFetchDefinition(
   options?: ResolveWebFetchDefinitionParams,
 ): WebFetchDefinitionResolution {
-  const fetch = resolveWebProviderConfig(options?.config, "fetch") as WebFetchConfig;
+  const fetch = resolveWebProviderConfig(options?.config, "fetch");
   if (fetch?.enabled === false) {
     return null;
   }
@@ -156,7 +154,7 @@ export function resolveWebFetchDefinition(
 export async function resolveWebFetchDefinitionAsync(
   options?: ResolveWebFetchDefinitionParams,
 ): Promise<WebFetchDefinitionResolution> {
-  const fetch = resolveWebProviderConfig(options?.config, "fetch") as WebFetchConfig;
+  const fetch = resolveWebProviderConfig(options?.config, "fetch");
   if (fetch?.enabled === false) {
     return null;
   }
@@ -175,7 +173,7 @@ function selectWebFetchDefinition(
   options: ResolveWebFetchDefinitionParams | undefined,
   providers: PluginWebFetchProviderEntry[],
 ): WebFetchDefinitionResolution {
-  const fetch = resolveWebProviderConfig(options?.config, "fetch") as WebFetchConfig;
+  const fetch = resolveWebProviderConfig(options?.config, "fetch");
   const runtimeWebFetch =
     options?.runtimeWebFetch ?? getActiveRuntimeWebToolsMetadataFromState()?.fetch;
   if (providers.length === 0) {
@@ -195,7 +193,7 @@ function selectWebFetchDefinition(
   }
   const definition = provider.createTool({
     config: options?.config,
-    fetchConfig: fetch as Record<string, unknown> | undefined,
+    fetchConfig: fetch,
     runtimeMetadata: runtimeWebFetch,
   });
   return definition ? { provider, definition } : null;
