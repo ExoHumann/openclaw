@@ -400,7 +400,9 @@ export function createPluginNativeAdmission(
       nativeNamespaces: Object.fromEntries([...used].map((id) => [id, state.namespaces.get(id)!])),
     });
     const unchanged = isDeepStrictEqual(state.receipts.get(key), next);
-    state.receipts.set(key, next);
+    if (!unchanged) {
+      state.receipts.set(key, next);
+    }
     if (!owner || !publishAdmission) {
       return;
     }

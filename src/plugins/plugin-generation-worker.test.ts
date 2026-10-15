@@ -147,6 +147,7 @@ it("isolates an active artifact from a sibling capture waiting on host publicati
   const root = fs.realpathSync(temp.make("plugin-generation-worker-sibling-"));
   const fixture = createFixture(path.join(root, "installed"), false);
   const cache = createPluginCache();
+  const siblingCache = createPluginCache();
   const roots = { ...resolvePluginInstallRoots(), stateDir: root };
   let releasePublication!: () => void;
   const gate = new Promise<void>((resolve) => {
@@ -161,6 +162,7 @@ it("isolates an active artifact from a sibling capture waiting on host publicati
       withPluginInstallRoots(roots, () =>
         withPluginSourceCaptureStorage({ stateDir: root, placement: "temporary" }, async () => {
           preparePluginNativeAdmissions(fixture.index, cache);
+          preparePluginNativeAdmissions(fixture.index, siblingCache);
           const first = await withPluginSourceAdmissionPublisher(
             async () => false,
             () => preparePluginGenerationArtifact({ rootDir: fixture.root, source: fixture.entry }),
@@ -172,10 +174,18 @@ it("isolates an active artifact from a sibling capture waiting on host publicati
               await gate;
               return false;
             },
-            () => preparePluginGenerationArtifact({ rootDir: fixture.root, source: fixture.entry }),
+            () =>
+              withPluginCache(siblingCache, () =>
+                preparePluginGenerationArtifact({ rootDir: fixture.root, source: fixture.entry }),
+              ),
           );
           try {
-            await started;
+            await Promise.race([
+              started,
+              preparing.then(() => {
+                throw new Error("Sibling capture completed without entering publication");
+              }),
+            ]);
             // Registration may schedule a lazy import while another plugin is preparing.
             await new Promise<void>((resolve, reject) => {
               setTimeout(() => {
@@ -189,6 +199,12 @@ it("isolates an active artifact from a sibling capture waiting on host publicati
                 }
               }, 0);
             });
+            await expect(
+              preparePluginGenerationArtifact({
+                rootDir: path.join(root, "missing"),
+                source: fixture.entry,
+              }),
+            ).rejects.toThrow();
           } finally {
             releasePublication();
             const second = await preparing;
@@ -199,20 +215,18 @@ it("isolates an active artifact from a sibling capture waiting on host publicati
             await second.artifact.disposeAsync();
             expect(fs.readFileSync(recovery.resolve(fixture.entry), "utf8")).toContain("fixture");
             await recovery.disposeAsync();
+            // Native custody keeps each worker alive until its admission owner retires.
+            await retirePluginCache(cache);
+            await retirePluginCache(siblingCache);
             expect(fs.existsSync(firstDirectory)).toBe(false);
             expect(fs.existsSync(secondDirectory)).toBe(false);
           }
-          await expect(
-            preparePluginGenerationArtifact({
-              rootDir: path.join(root, "missing"),
-              source: fixture.entry,
-            }),
-          ).rejects.toThrow();
         }),
       ),
     );
   } finally {
     releasePublication();
     await retirePluginCache(cache);
+    await retirePluginCache(siblingCache);
   }
 });

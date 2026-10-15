@@ -26,7 +26,7 @@ export type GenerationWorkerInput = (
   | { operation: "close" }
 ) & { nativeLoads?: string[] };
 export type GenerationWorkerReply =
-  | { value: GenerationWireValue; resources: number }
+  | { value: GenerationWireValue; resources: number; admission?: GenerationWireValue }
   | { error: { message: string; name: string; stack?: string }; resources: number };
 export type GenerationWorkerCallback =
   | { kind: "publish"; id: number; publication: PluginSourceAdmissionPublication }

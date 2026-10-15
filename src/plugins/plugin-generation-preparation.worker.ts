@@ -14,7 +14,9 @@ import type {
 import {
   nativeAdmissionStateFor,
   settlePluginNativeAdmissions,
+  type PluginNativeAdmissionTransfer,
 } from "./plugin-native-admission-state.js";
+import { retainPluginNativeRoot } from "./plugin-native-root-lease.js";
 import { withPluginSourceCaptureDirectory } from "./plugin-package-metadata-capture.js";
 import { withPluginSourceAdmissionPublisher } from "./plugin-source-admission-store.js";
 import type { PluginSourceAdmissionPublication } from "./plugin-source-admission.types.js";
@@ -26,6 +28,31 @@ const resources = new Set<Resource>();
 const orphaned = new Set<Resource>();
 const owned = new WeakSet<Resource>();
 const sourceCustody = createPluginGenerationSourceCustody();
+const sentReceipts: PluginNativeAdmissionTransfer["receipts"] = new Map();
+const sentRoots = new Set<string>();
+
+function admissionChanges() {
+  const state = nativeAdmissionStateFor();
+  const receipts = new Map(
+    [...state.receipts].filter(([key, receipt]) => sentReceipts.get(key) !== receipt),
+  );
+  if (!receipts.size) {
+    return undefined;
+  }
+  const directories = new Set(
+    [...receipts.values()].flatMap((receipt) => Object.keys(receipt.nativeNamespaces)),
+  );
+  const roots = [...state.roots]
+    .filter((root) => directories.has(root.directory) && !sentRoots.has(root.directory))
+    .map((root) => {
+      sentRoots.add(root.directory);
+      return own(retainPluginNativeRoot(root));
+    });
+  for (const [key, receipt] of receipts) {
+    sentReceipts.set(key, receipt);
+  }
+  return codec.encode({ receipts, roots } satisfies PluginNativeAdmissionTransfer);
+}
 function own<T extends Resource>(resource: T): T {
   if (owned.has(resource)) {
     return resource;
@@ -186,6 +213,9 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
               target.set(name, value);
             }
           }
+          for (const [key, receipt] of state.receipts) {
+            sentReceipts.set(key, receipt);
+          }
           const artifact = own(
             capturePluginGenerationArtifact(
               command.rootDir,
@@ -215,7 +245,9 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
         if (command.operation !== "call" || command.asynchronous) {
           await settlePluginNativeAdmissions();
         }
-        return { value: codec.encode(result), resources: resources.size - orphaned.size };
+        const value = codec.encode(result);
+        const admission = admissionChanges();
+        return { value, admission, resources: resources.size - orphaned.size };
       } catch (error) {
         let failure = error;
         if (failedCapture) {

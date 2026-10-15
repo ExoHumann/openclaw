@@ -11,7 +11,11 @@ import type {
   GenerationWorkerReply,
   GenerationWorkerCallback,
 } from "./plugin-generation-worker-contract.js";
-import { nativeAdmissionStateFor } from "./plugin-native-admission-state.js";
+import {
+  adoptPluginNativeAdmissions,
+  nativeAdmissionStateFor,
+  type PluginNativeAdmissionTransfer,
+} from "./plugin-native-admission-state.js";
 import { createPluginSourceAdmissionPublisher } from "./plugin-source-admission-store.js";
 import { resolvePluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 import { createPluginSourceCaptureRoot } from "./plugin-source-capture-directory.js";
@@ -132,6 +136,12 @@ function createPreparationClient() {
     resources = reply.resources;
     if ("error" in reply) {
       throw Object.assign(new Error(reply.error.message), reply.error);
+    }
+    if (reply.admission) {
+      adoptPluginNativeAdmissions(
+        admission,
+        codec.decode(reply.admission) as PluginNativeAdmissionTransfer,
+      );
     }
     return codec.decode(reply.value);
   }
