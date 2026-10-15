@@ -20,8 +20,9 @@ const {
 vi.mock("../../web-fetch/content-extractors.runtime.js", () => ({
   extractReadableContent: extractReadableContentMock,
 }));
+// mock-isolation: Exercise fetch extraction with controlled providers instead of loading plugin runtimes.
 vi.mock("../../web-fetch/runtime.js", () => ({
-  resolveWebFetchDefinition: resolveWebFetchDefinitionMock,
+  resolveWebFetchDefinitionAsync: resolveWebFetchDefinitionMock,
 }));
 vi.mock("./web-tool-runtime-context.js", () => ({
   resolveWebToolRuntimeContext: resolveWebToolRuntimeContextMock,

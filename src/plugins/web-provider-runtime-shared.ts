@@ -4,7 +4,11 @@ import {
   registryContainsRuntimePluginIds,
 } from "./active-runtime-registry.js";
 import { normalizePluginId } from "./config-state.js";
-import { isPluginRegistryLoadInFlight, loadOpenClawPlugins } from "./loader.js";
+import {
+  isPluginRegistryLoadInFlight,
+  loadOpenClawPlugins,
+  loadOpenClawPluginsAsync,
+} from "./loader.js";
 import type { PluginLoadOptions } from "./loader.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
 import { hasCompletedPluginRuntimeRegistration } from "./plugin-runtime-artifact-binding.js";
@@ -93,11 +97,47 @@ function mergeInspectedProviderEntries<T extends { pluginId: string; provider: {
   });
 }
 
-/** Resolves plugin web providers from setup, active runtime, or a scoped load. */
+type ProviderRegistryLoad = {
+  options: PluginLoadOptions;
+  withCache?: <T>(run: () => T) => T;
+};
+
+/** Synchronous setup and public SDK consumers retain their existing contract. */
 export function resolvePluginWebProviders<TEntry>(
   params: ResolvePluginWebProvidersParams,
   deps: WebProviderRuntimeResolution<TEntry>,
 ): TEntry[] {
+  const steps = resolvePluginWebProvidersSteps(params, deps, false);
+  let step = steps.next();
+  while (!step.done) {
+    const { options, withCache } = step.value;
+    const load = () => loadOpenClawPlugins(options);
+    step = steps.next(withCache ? withCache(load) : load());
+  }
+  return step.value;
+}
+
+/** Runtime requests await worker preparation without changing provider selection. */
+export async function resolvePluginWebProvidersAsync<TEntry>(
+  params: ResolvePluginWebProvidersParams,
+  deps: WebProviderRuntimeResolution<TEntry>,
+): Promise<TEntry[]> {
+  const steps = resolvePluginWebProvidersSteps(params, deps, true);
+  let step = steps.next();
+  while (!step.done) {
+    const { options, withCache } = step.value;
+    const load = () => loadOpenClawPluginsAsync(options);
+    step = steps.next(await (withCache ? withCache(load) : load()));
+  }
+  return step.value;
+}
+
+/** Resolves plugin web providers from setup, active runtime, or a scoped load. */
+function* resolvePluginWebProvidersSteps<TEntry>(
+  params: ResolvePluginWebProvidersParams,
+  deps: WebProviderRuntimeResolution<TEntry>,
+  asynchronous: boolean,
+): Generator<ProviderRegistryLoad, TEntry[], PluginRegistry> {
   const env = params.env ?? process.env;
   const workspaceDir = params.workspaceDir ?? getActivePluginRegistryWorkspaceDir();
   if (params.mode === "setup") {
@@ -124,8 +164,8 @@ export function resolvePluginWebProviders<TEntry>(
     if (bundledArtifactProviders) {
       return bundledArtifactProviders;
     }
-    const registry = loadOpenClawPlugins(
-      buildPluginRuntimeLoadOptions(
+    const registry = yield {
+      options: buildPluginRuntimeLoadOptions(
         {
           config: withActivatedPluginIds({
             config: params.config,
@@ -146,7 +186,7 @@ export function resolvePluginWebProviders<TEntry>(
           activate: false,
         },
       ),
-    );
+    };
     return deps.mapRegistryProviders({ registry, onlyPluginIds: pluginIds });
   }
 
@@ -249,7 +289,7 @@ export function resolvePluginWebProviders<TEntry>(
       return providers;
     }
   }
-  if (isPluginRegistryLoadInFlight(loadOptions)) {
+  if (!asynchronous && isPluginRegistryLoadInFlight(loadOptions)) {
     return [];
   }
   if (hasExplicitEmptyScope) {
@@ -295,11 +335,16 @@ export function resolvePluginWebProviders<TEntry>(
       expectedSourceDigests: current.loadContext.expectedSourceDigests,
     };
     const supplemental = missingPluginIds.length
-      ? current.inspection.withSupplementalCache(() =>
-          isPluginRegistryLoadInFlight(supplementalOptions)
-            ? undefined
-            : loadOpenClawPlugins(supplementalOptions),
-        )
+      ? asynchronous
+        ? yield {
+            options: supplementalOptions,
+            withCache: current.inspection.withSupplementalCache,
+          }
+        : current.inspection.withSupplementalCache(() =>
+            isPluginRegistryLoadInFlight(supplementalOptions)
+              ? undefined
+              : loadOpenClawPlugins(supplementalOptions),
+          )
       : undefined;
     current.inspection.assertCurrent();
     // Registration order, not inspection selection order, decides duplicate provider ids.
@@ -324,7 +369,7 @@ export function resolvePluginWebProviders<TEntry>(
     };
     return deps.mapRegistryProviders({ registry, onlyPluginIds });
   }
-  const registry = loadOpenClawPlugins(loadOptions);
+  const registry = yield { options: loadOptions };
   return deps.mapRegistryProviders({
     registry,
     onlyPluginIds,

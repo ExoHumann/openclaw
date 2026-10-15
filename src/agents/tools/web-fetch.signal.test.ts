@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import type { WebFetchProviderToolDefinition } from "../../plugin-sdk/provider-web-fetch.js";
 import { withFetchPreconnect } from "../../test-utils/fetch-mock.js";
 import { createWebFetchTool } from "./web-fetch.js";
@@ -10,7 +10,10 @@ import * as webGuardedFetch from "./web-guarded-fetch.js";
 const { resolveWebFetchDefinition } = vi.hoisted(() => ({
   resolveWebFetchDefinition: vi.fn(),
 }));
-vi.mock("../../web-fetch/runtime.js", () => ({ resolveWebFetchDefinition }));
+// mock-isolation: Control discovery completion and cancellation without preparing real plugins.
+vi.mock("../../web-fetch/runtime.js", () => ({
+  resolveWebFetchDefinitionAsync: resolveWebFetchDefinition,
+}));
 vi.mock("../../web-fetch/content-extractors.runtime.js", () => ({
   extractReadableContent: vi.fn(async () => null),
 }));
@@ -188,5 +191,47 @@ describe("web_fetch provider cancellation", () => {
     expect.soft(execute).toHaveBeenCalledTimes(0);
     assert(isRecord(fresh.details));
     expect(cached.details).toEqual({ ...fresh.details, cached: true });
+  });
+  it("does not execute a provider when cancelled during asynchronous discovery", async () => {
+    vi.stubGlobal(
+      "fetch",
+      withFetchPreconnect(
+        vi.fn(async () => {
+          throw new Error("fixture network failure");
+        }),
+      ),
+    );
+    const started = createDeferred();
+    const release = createDeferred();
+    const execute = vi.fn(async () => ({ text: "must not execute" }));
+    resolveWebFetchDefinition.mockImplementation(async () => {
+      started.resolve();
+      await release.promise;
+      return { provider: { id: "test-fetch" }, definition: { execute } };
+    });
+    const tool = createWebFetchTool({ config: {} })!;
+    const controller = new AbortController();
+    const reason = new Error("cancelled during provider discovery");
+    const outcome = Promise.allSettled([
+      tool.execute(
+        "cancel-discovery",
+        { url: "https://example.com/cancel-async-discovery" },
+        controller.signal,
+      ),
+    ]);
+    try {
+      await awaitGateBeforeSettlement(
+        started.promise,
+        outcome,
+        "Fetch finished before async provider discovery",
+      );
+      controller.abort(reason);
+      release.resolve();
+      expect(await outcome).toEqual([{ status: "rejected", reason }]);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await outcome;
+    }
   });
 });

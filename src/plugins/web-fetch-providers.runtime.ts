@@ -10,6 +10,7 @@ import {
 } from "./web-provider-resolution-shared.js";
 import {
   resolvePluginWebProviders,
+  resolvePluginWebProvidersAsync,
   type ResolvePluginWebProvidersParams,
   type ResolveRuntimeWebProvidersParams,
   type WebProviderRuntimeResolution,
@@ -45,6 +46,29 @@ export function resolveRuntimeWebFetchProviders(
   params: ResolveRuntimeWebProvidersParams,
 ): PluginWebFetchProviderEntry[] {
   return resolvePluginWebProviders(params, {
+    ...providerResolution,
+    resolveBundledRuntimeArtifactProviders:
+      resolveBundledRuntimeWebFetchProvidersFromPublicArtifacts,
+  });
+}
+
+/** Resolve fetch providers while preparing external plugins off the request thread. */
+export function resolvePluginWebFetchProvidersAsync(
+  params: ResolvePluginWebProvidersParams,
+): Promise<PluginWebFetchProviderEntry[]> {
+  return resolvePluginWebProvidersAsync(params, {
+    ...providerResolution,
+    resolveBundledPublicArtifactProviders: resolveBundledWebFetchProvidersFromPublicArtifacts,
+    resolveBundledRuntimeArtifactProviders:
+      resolveBundledRuntimeWebFetchProvidersFromPublicArtifacts,
+  });
+}
+
+/** Resolve eligible runtime providers without setup-mode activation. */
+export function resolveRuntimeWebFetchProvidersAsync(
+  params: ResolveRuntimeWebProvidersParams,
+): Promise<PluginWebFetchProviderEntry[]> {
+  return resolvePluginWebProvidersAsync(params, {
     ...providerResolution,
     resolveBundledRuntimeArtifactProviders:
       resolveBundledRuntimeWebFetchProvidersFromPublicArtifacts,

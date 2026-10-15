@@ -1,4 +1,5 @@
 import { afterAll, afterEach, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { loadOpenClawPlugins, loadOpenClawPluginsAsync } from "./loader.js";
 import {
@@ -73,12 +74,11 @@ it("waits for selected external source acquisition before publishing registratio
       return registry;
     });
     try {
-      await Promise.race([
+      await awaitGateBeforeSettlement(
         entered.promise,
-        loading.then(() => {
-          throw new Error("Registry published before source acquisition");
-        }),
-      ]);
+        loading,
+        "Registry published before source acquisition",
+      );
       expect(published).toBe(false);
     } finally {
       release.resolve();
@@ -128,4 +128,106 @@ it("reuses a loaded registry without reacquiring its external sources", async ()
     expect(second).toBe(first);
     expect(second.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
   });
+});
+
+it("joins a pending async registry load and reuses its completed registration", async () => {
+  const { options } = fixture();
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  const prepare = preparation.preparePluginGenerationArtifact;
+  const acquisition = vi
+    .spyOn(preparation, "preparePluginGenerationArtifact")
+    .mockImplementation(async (params) => {
+      entered.resolve();
+      await release.promise;
+      return prepare(params);
+    });
+  await isolated(async () => {
+    const first = loadOpenClawPluginsAsync(options);
+    let second: ReturnType<typeof loadOpenClawPluginsAsync> | undefined;
+    try {
+      await awaitGateBeforeSettlement(
+        entered.promise,
+        first,
+        "Registry published before source acquisition",
+      );
+      second = loadOpenClawPluginsAsync(options);
+      // Attach rejection handlers before releasing preparation: an uncoordinated
+      // second load throws PluginLoadReentryError while the first is pending.
+      const joined = Promise.all([first, second]);
+      release.resolve();
+      const [firstRegistry, secondRegistry] = await joined;
+      expect(secondRegistry).toBe(firstRegistry);
+      expect(secondRegistry.providers.map(({ provider }) => provider.label)).toEqual([
+        "First",
+        "Second",
+      ]);
+      expect(acquisition).toHaveBeenCalledTimes(2);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(second ? [first, second] : [first]);
+    }
+  });
+});
+
+it("applies each waiting caller's throwOnLoadError policy", async () => {
+  const { options } = fixture();
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  const acquisition = vi
+    .spyOn(preparation, "preparePluginGenerationArtifact")
+    .mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      throw new Error("fixture acquisition failed");
+    });
+  await isolated(async () => {
+    const tolerant = loadOpenClawPluginsAsync(options);
+    let strict: ReturnType<typeof loadOpenClawPluginsAsync> | undefined;
+    try {
+      await awaitGateBeforeSettlement(
+        entered.promise,
+        tolerant,
+        "Registry published before source acquisition",
+      );
+      strict = loadOpenClawPluginsAsync({ ...options, throwOnLoadError: true });
+      const settled = Promise.allSettled([tolerant, strict]);
+      release.resolve();
+      const [ordinary, rejecting] = await settled;
+      expect(ordinary.status).toBe("fulfilled");
+      expect(rejecting.status).toBe("rejected");
+      if (rejecting.status === "rejected") {
+        expect(rejecting.reason.name).toBe("PluginLoadFailureError");
+      }
+      expect(acquisition).toHaveBeenCalledTimes(2);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(strict ? [tolerant, strict] : [tolerant]);
+    }
+  });
+});
+
+it("keeps explicit cache opt-outs as independent registry loads", async () => {
+  const { options } = fixture();
+  await isolated(async () => {
+    const first = await loadOpenClawPluginsAsync({ ...options, cache: false });
+    const second = await loadOpenClawPluginsAsync({ ...options, cache: false });
+    expect(second).not.toBe(first);
+    expect(second.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
+  });
+});
+
+it("does not join pending registrations across inventory owners", async () => {
+  const { options } = fixture();
+  const loads = [
+    isolated(() => loadOpenClawPluginsAsync(options)),
+    isolated(() => loadOpenClawPluginsAsync(options)),
+  ] as const;
+  try {
+    const [first, second] = await Promise.all(loads);
+    expect(second).not.toBe(first);
+    expect(second.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
+  } finally {
+    await Promise.allSettled(loads);
+  }
 });
