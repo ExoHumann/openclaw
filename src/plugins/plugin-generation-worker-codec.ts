@@ -37,7 +37,12 @@ export class GenerationCodec {
     ) => void,
   ) {}
 
-  encode(value: unknown, seen = new Set<object>(), key?: string): GenerationWireValue {
+  encodeArguments(values: unknown[]): GenerationWireValue[] {
+    const seen = new Map<object, number>();
+    return values.map((value) => this.encode(value, seen));
+  }
+
+  encode(value: unknown, seen = new Map<object, number>(), key?: string): GenerationWireValue {
     if (value === null || (typeof value !== "object" && typeof value !== "function")) {
       return { kind: "value", value };
     }
@@ -45,23 +50,29 @@ export class GenerationCodec {
     if (remote !== undefined) {
       return { kind: "remote", id: remote };
     }
-    let id = this.identities.get(value);
-    if (id !== undefined && isOwnedPluginNativeRecovery(value)) {
+    const existing = seen.get(value);
+    if (existing !== undefined) {
+      return { kind: "reference", id: existing };
+    }
+    const sourceResolver =
+      typeof value === "function" ? snapshotPluginRecoverySourceResolver(value) : undefined;
+    const native = isOwnedPluginNativeRecovery(value);
+    const persistent = native || (typeof value === "function" && !sourceResolver);
+    let id = persistent ? this.identities.get(value) : undefined;
+    if (id !== undefined && native) {
       return { kind: "reference", id };
     }
     if (id === undefined) {
       id = ++this.next;
-      this.identities.set(value, id);
-      this.handles.set(id, value);
+      if (persistent) {
+        this.identities.set(value, id);
+        this.handles.set(id, value);
+      }
     }
-    if (seen.has(value)) {
-      return { kind: "reference", id };
-    }
-    seen.add(value);
+    seen.set(value, id);
     if (typeof value === "function") {
-      const snapshot = snapshotPluginRecoverySourceResolver(value);
-      if (snapshot) {
-        return { kind: "source-resolver", id, snapshot: this.encode(snapshot, seen) };
+      if (sourceResolver) {
+        return { kind: "source-resolver", id, snapshot: this.encode(sourceResolver, seen) };
       }
       return {
         kind: "function",
@@ -103,19 +114,21 @@ export class GenerationCodec {
     };
   }
 
-  decode(value: GenerationWireValue): unknown {
+  decode(value: GenerationWireValue, message = new Map<number, object>()): unknown {
     if (value.kind === "value") {
       return value.value;
     }
     if (value.kind === "reference" || value.kind === "remote") {
       const result =
-        value.kind === "remote" ? this.handles.get(value.id) : this.received.get(value.id);
+        value.kind === "remote"
+          ? this.handles.get(value.id)
+          : (message.get(value.id) ?? this.received.get(value.id));
       if (!result) {
         throw new Error("Expired plugin generation handle");
       }
       return result;
     }
-    const known = this.received.get(value.id);
+    const known = message.get(value.id) ?? this.received.get(value.id);
     if (known) {
       return known;
     }
@@ -124,14 +137,16 @@ export class GenerationCodec {
       result = (...args: unknown[]) => this.invoke(value.id, args, value.asynchronous);
     } else if (value.kind === "source-resolver") {
       result = restorePluginRecoverySourceResolver(
-        this.decode(value.snapshot) as PluginRecoverySourceResolverSnapshot,
+        // SAFETY: the internal source-resolver encoder emits the lookup owner's snapshot.
+        this.decode(value.snapshot, message) as PluginRecoverySourceResolverSnapshot,
       );
     } else if (value.kind === "url") {
       result = new URL(value.value);
     } else if (value.kind === "native") {
       // Both endpoints use this codec and the native admission owner's descriptor.
       result = restorePluginNativeRecovery(
-        this.decode(value.snapshot) as PluginNativeRecoverySnapshot,
+        // SAFETY: the internal native encoder emits snapshotPluginNativeRecovery's descriptor.
+        this.decode(value.snapshot, message) as PluginNativeRecoverySnapshot,
       );
     } else if (value.kind === "map") {
       result = new Map();
@@ -142,14 +157,15 @@ export class GenerationCodec {
     } else {
       result = {};
     }
-    this.received.set(value.id, result);
-    if (value.kind !== "source-resolver") {
+    message.set(value.id, result);
+    if (value.kind === "function" || value.kind === "native") {
+      this.received.set(value.id, result);
       this.remote.set(result, value.id);
     }
     if (value.kind === "object") {
       for (const [key, entry] of value.entries) {
         Object.defineProperty(result, key, {
-          value: this.decode(entry),
+          value: this.decode(entry, message),
           enumerable: true,
           configurable: true,
           writable: true,
@@ -189,15 +205,15 @@ export class GenerationCodec {
       }
     } else if (value.kind === "map" && result instanceof Map) {
       for (const [key, entry] of value.entries) {
-        result.set(this.decode(key), this.decode(entry));
+        result.set(this.decode(key, message), this.decode(entry, message));
       }
     } else if (value.kind === "set" && result instanceof Set) {
       for (const entry of value.entries) {
-        result.add(this.decode(entry));
+        result.add(this.decode(entry, message));
       }
     } else if (value.kind === "array" && Array.isArray(result)) {
       for (const entry of value.entries) {
-        result.push(this.decode(entry));
+        result.push(this.decode(entry, message));
       }
     }
     return result;
@@ -208,10 +224,11 @@ export class GenerationCodec {
     if (typeof fn !== "function") {
       throw new Error("Invalid plugin generation method");
     }
+    const message = new Map<number, object>();
     return Reflect.apply(
       fn,
       undefined,
-      args.map((arg) => this.decode(arg)),
+      args.map((arg) => this.decode(arg, message)),
     );
   }
 }

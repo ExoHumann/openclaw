@@ -128,6 +128,7 @@ function mapSource(captureId: number, filename: string): string {
   );
   const deadline = performance.now() + 15_000;
   for (;;) {
+    // SAFETY: This private port is transferred only to the matching host callback protocol.
     const message = receiveMessageOnPort(callbacks)?.message as
       | GenerationWorkerCallback
       | undefined;
@@ -181,7 +182,7 @@ async function close(): Promise<void> {
 }
 serveOwnedWorkerTasks<GenerationWorkerReply>(
   async (input) => {
-    // The matching internal host owns this discriminated protocol.
+    // SAFETY: The matching internal host submits only GenerationWorkerInput to this pool.
     const command = input as GenerationWorkerInput;
     if (command.operation === "capture") {
       context = command;

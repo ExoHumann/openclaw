@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { queryObjects } from "node:v8";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
@@ -134,6 +136,13 @@ it("keeps captured files and recovery alive until their owning artifacts are rel
       const prepared = await preparePluginGenerationArtifact({ rootDir: source, source: entry });
       prepared.attachModuleSource((filename) => filename);
       const artifact = prepared.artifact;
+      expect(fs.readFileSync(artifact.resolve(entry), "utf8")).toContain("42");
+      const replies = Array.from({ length: 100 }, () => new WeakRef(artifact.prepareModule(entry)));
+      const control = new WeakRef({});
+      await nextTurn();
+      queryObjects(WeakRef);
+      expect(control.deref()).toBeUndefined();
+      expect(replies.every((reply) => reply.deref() === undefined)).toBe(true);
       expect(fs.readFileSync(artifact.resolve(entry), "utf8")).toContain("42");
       const recovery = artifact.captureRecoverySource();
       await artifact.disposeAsync();

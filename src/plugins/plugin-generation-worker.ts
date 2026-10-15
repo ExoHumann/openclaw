@@ -125,7 +125,7 @@ function createPreparationClient() {
         operation: "call",
         handle,
         asynchronous,
-        args: args.map((arg) => codec.encode(arg)),
+        args: codec.encodeArguments(args),
       };
       return asynchronous ? request(command) : requestSync(command);
     },
@@ -146,6 +146,7 @@ function createPreparationClient() {
     if (reply.admission) {
       adoptPluginNativeAdmissions(
         admission,
+        // SAFETY: The matching worker encodes only PluginNativeAdmissionTransfer in this field.
         codec.decode(reply.admission) as PluginNativeAdmissionTransfer,
       );
     }
@@ -198,6 +199,7 @@ function createPreparationClient() {
     }): T => {
       for (;;) {
         operation.service();
+        // SAFETY: This private port receives only the matching worker callback protocol.
         const message = receiveMessageOnPort(port1)?.message as
           | GenerationWorkerCallback
           | undefined;
@@ -266,6 +268,7 @@ function createPreparationClient() {
           },
         });
         return {
+          // SAFETY: A successful capture reply encodes the worker's PluginGenerationArtifact.
           artifact: artifact as PluginGenerationArtifact,
           attachModuleSource: (mapper) => {
             moduleSources.set(captureId, mapper);
