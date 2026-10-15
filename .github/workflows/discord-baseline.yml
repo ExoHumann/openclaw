@@ -1,0 +1,42 @@
+name: Discord PR baseline comparison
+on:
+  push:
+    branches: [codex/discord-baseline-172750]
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: main-base
+            sha: 653cabd98b88043c5be8209eb8075289c20a5859
+          - label: pr-merge
+            sha: baf1181f767cf4b434642810d690f3a92e0c13c3
+    name: Discord ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: openclaw/openclaw
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - name: Record source and resources
+        run: |
+          git rev-parse HEAD
+          nproc
+          free -m
+      - uses: ./.github/actions/setup-node-env
+        with:
+          semantic-checks: 'true'
+          install-bun: 'false'
+      - name: Prepare exact-source E2E runtime
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: '1'
+          OPENCLAW_RUN_NODE_SKIP_DTS_BUILD: '0'
+          VITEST: '1'
+        run: node --import ./scripts/tsx.mjs scripts/build-all.mts qaRuntime
+      - name: Run unchanged Discord ownership test
+        run: node scripts/run-vitest.mjs run --config test/vitest/vitest.e2e.config.ts test/e2e/gateway-transcripts-discord-capture.e2e.test.ts --maxWorkers=1
