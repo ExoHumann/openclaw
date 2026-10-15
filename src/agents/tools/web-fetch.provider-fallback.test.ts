@@ -19,8 +19,9 @@ const runtimeState = vi.hoisted(() => ({
   activeRuntimeWebToolsMetadata: null as null | Record<string, unknown>,
 }));
 
+// mock-isolation: Inject provider outcomes without loading the plugin inventory in fallback normalization tests.
 vi.mock("../../web-fetch/runtime.js", () => ({
-  resolveWebFetchDefinition: resolveWebFetchDefinitionMock,
+  resolveWebFetchDefinitionAsync: resolveWebFetchDefinitionMock,
 }));
 vi.mock("../../secrets/runtime-state.js", () => ({
   getActiveSecretsRuntimeConfigSnapshot: () => runtimeState.activeSecretsRuntimeSnapshot,
