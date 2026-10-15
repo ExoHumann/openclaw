@@ -1,31 +1,28 @@
+// Gateway-thread preparation requires the plugin suite's process pool on every platform.
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
-import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
-import type { OpenClawConfig } from "../../config/types.js";
+import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
+import { createWebFetchTool } from "../agents/tools/web-fetch.js";
+import type { OpenClawConfig } from "../config/types.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import {
   cleanupPluginLoaderFixturesForTest,
   makePluginLoaderTempDir,
   resetPluginLoaderTestStateForTest,
   useNoBundledPlugins,
   writePlugin,
-} from "../../plugins/loader.test-fixtures.js";
-import {
-  createPluginCache,
-  retirePluginCache,
-  withPluginCache,
-} from "../../plugins/plugin-cache.js";
-import * as preparation from "../../plugins/plugin-generation-worker.js";
-import { withPluginSourceCaptureStorage } from "../../plugins/plugin-source-capture-context.js";
-import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
-import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
-import { createDeferredCore } from "../../shared/deferred.js";
-import { createWebFetchTool } from "./web-fetch.js";
+} from "./loader.test-fixtures.js";
+import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
+import * as preparation from "./plugin-generation-worker.js";
+import { withPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
+import { createEmptyPluginRegistry } from "./registry-empty.js";
+import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.js";
 const { fetchWithWebToolsNetworkGuardMock } = vi.hoisted(() => ({
   fetchWithWebToolsNetworkGuardMock: vi.fn(),
 }));
 
 // mock-isolation: Force the network failure while retaining real provider discovery and preparation.
-vi.mock("./web-guarded-fetch.js", () => ({
+vi.mock("../agents/tools/web-guarded-fetch.js", () => ({
   fetchWithWebToolsNetworkGuard: fetchWithWebToolsNetworkGuardMock,
 }));
 
