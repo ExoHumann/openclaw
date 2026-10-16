@@ -22,7 +22,11 @@ import {
   isExclusiveCompactShardName,
 } from "../../scripts/lib/ci-node-test-plan.mts";
 import { rebalanceRuntimeTestJobs } from "../../scripts/lib/ci-runtime-test-placement.mts";
-import { refitTestTimings, type CiTimingRun } from "../../scripts/lib/ci-test-timings-refit.mts";
+import {
+  isCiTimingRuntimeTrial,
+  refitTestTimings,
+  type CiTimingRun,
+} from "../../scripts/lib/ci-test-timings-refit.mts";
 import {
   createNativeSoloTimingKey,
   ciTestTimingsSchema,
@@ -907,6 +911,7 @@ function samplerToolingLog(
 }
 
 type SamplerFixture = {
+  changedUiFiles?: string[];
   observedAt?: string;
   runs: ReturnType<typeof samplerRun>[];
   jobs: ReturnType<typeof samplerJob>[];
@@ -945,7 +950,14 @@ function withSamplerFixture(
     writeFileSync(requests, "");
     writeFileSync(
       clock,
-      `const OriginalDate = Date;
+      `const childProcess = require("node:child_process");
+const execFileSync = childProcess.execFileSync;
+childProcess.execFileSync = (file, args, options) =>
+  file === "git" && args[0] === "diff"
+    ? ${JSON.stringify((fixture.changedUiFiles ?? []).join("\0"))}
+    : execFileSync(file, args, options);
+require("node:module").syncBuiltinESMExports();
+const OriginalDate = Date;
 global.Date = class extends OriginalDate {
   constructor(...args) { super(...(args.length ? args : [${JSON.stringify(sampleNow)}])); }
   static now() { return OriginalDate.parse(${JSON.stringify(fixture.observedAt ?? sampleNow)}); }
@@ -1037,6 +1049,82 @@ if (args[1] === "--help") {
 }
 
 describe("CI test timing refit", () => {
+  it.each(["bun-all", "dual-all"])(
+    "excludes complete %s run fragments from learning and pruning legacy keys",
+    (policy) => {
+      const previous: CiTestTimings = {
+        ...baseline,
+        compactGroupSeconds: { blacksmith: { retained: 90 }, github: {} },
+      };
+      const runs = [1, 2, 3].flatMap((id) => [
+        timingRun(id, [
+          { kind: "compact", labels: ["blacksmith-4vcpu-ubuntu-2404"], text: compactLog(20) },
+        ]),
+        timingRun(id, [
+          {
+            kind: "compact",
+            labels: ["blacksmith-4vcpu-ubuntu-2404"],
+            text: `2026-08-27T23:00:00Z OPENCLAW_CI_TEST_RUNTIME_POLICY: ${policy}\n${compactLog(30)}`,
+          },
+        ]),
+      ]);
+      const result = refitTestTimings(runs, previous);
+      expect(result.timings).toEqual(previous);
+      expect(result.contributingRunIds.blacksmith).toEqual([]);
+      expect(result.runIds).toEqual([]);
+    },
+  );
+
+  it("recognizes only recorded runtime policy headers, including gh-wrapped ANSI logs", () => {
+    expect(
+      isCiTimingRuntimeTrial(
+        "job\tstep\t2026-08-27T23:00:00Z \u001b[32m  OPENCLAW_CI_TEST_RUNTIME_POLICY: dual-all\u001b[0m",
+      ),
+    ).toBe(true);
+    expect(
+      isCiTimingRuntimeTrial(
+        "2026-08-27T23:00:00Z [shard:fixture] OPENCLAW_CI_TEST_RUNTIME_POLICY: dual-all",
+      ),
+    ).toBe(false);
+    expect(
+      isCiTimingRuntimeTrial("2026-08-27T23:00:00Z OPENCLAW_CI_TEST_RUNTIME_POLICY: dual"),
+    ).toBe(false);
+  });
+
+  it.each(["bun-all", "dual-all"])(
+    "does not sample %s dispatch trials in the refit CLI",
+    (policy) => {
+      const packed = packedReleaseFixture().text.replace(
+        "OPENCLAW_CI_TEST_RUNTIME_POLICY: dual",
+        `OPENCLAW_CI_TEST_RUNTIME_POLICY: ${policy}`,
+      );
+      withSamplerFixture(
+        {
+          runs: [samplerRun(1), samplerRun(2)],
+          packedReleaseRuns: [samplerRun(3, { event: "workflow_dispatch" })],
+          jobs: [
+            samplerJob(11, 1),
+            samplerJob(21, 2),
+            samplerJob(31, 3, {
+              name: "checks-node-release-packed-1",
+              labels: ["ubuntu-24.04"],
+              log: packed,
+            }),
+          ],
+        },
+        (fixture) => {
+          const result = fixture.invoke();
+          expect(result.status, result.stderr).toBe(0);
+          expect(result.stderr).toContain("Skipped packed-release run 3: runtime trial");
+          expect(JSON.parse(fixture.contents()).compactGroupSeconds).toEqual({
+            blacksmith: { "core-unit-src-security-2": 20 },
+            github: {},
+          });
+        },
+      );
+    },
+  );
+
   it("refits complete packed release runtime walls from independent runs without pruning", () => {
     const { timingKeys, text } = packedReleaseFixture();
     const previous: CiTestTimings = {
@@ -2135,6 +2223,35 @@ describe("CI timing sampler provenance", () => {
       );
     },
   );
+
+  it("retains changed UI file prices until matching-source samples arrive", () => {
+    const changed = "ui/src/e2e/optimized.e2e.test.ts";
+    const runs = [1, 2, 3].map((id) => samplerRun(id));
+    withSamplerFixture(
+      {
+        runs,
+        changedUiFiles: [changed],
+        baseline: {
+          ...baseline,
+          uiE2e: { ...baseline.uiE2e, fileSeconds: { [changed]: 8, [measuredFile]: 100 } },
+        },
+        jobs: runs.flatMap(({ id }) => [
+          samplerJob(id * 10, id),
+          samplerJob(id * 10 + 1, id, {
+            name: "checks-ui-e2e (1/9)",
+            log: uiLog({ [changed]: 69, [measuredFile]: 130 }),
+          }),
+        ]),
+      },
+      (fixture) => {
+        const result = fixture.invoke(false, 3);
+        expect(result.status, result.stderr).toBe(0);
+        const timings = ciTestTimingsSchema.parse(JSON.parse(fixture.contents()));
+        expect(timings.uiE2e.fileSeconds).toEqual({ [changed]: 8, [measuredFile]: 130 });
+        expect(result.stdout).toContain("UI file samples excluded after source changes: 1");
+      },
+    );
+  });
 
   it("seeks compact contributors past docs-only and unparseable runs, preserving all attempts and unchanged bytes", () => {
     const releaseRuns = [10, 11].map((id) =>

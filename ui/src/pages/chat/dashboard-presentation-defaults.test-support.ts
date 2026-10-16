@@ -1,4 +1,3 @@
-import { render } from "lit";
 import { flush } from "solid-js";
 import { expect, vi } from "vitest";
 import type { GatewaySessionRow, SessionsPatchResult } from "../../api/types.ts";
@@ -16,6 +15,7 @@ import {
   type TestChatPane,
 } from "./chat-pane.test-support.ts";
 import { createPageState } from "./chat-state-page.ts";
+import { renderPaneHeaderInto } from "./components/chat-pane-header.test-support.ts";
 import { isSidebarSlotVisible, type SidebarLayout } from "./sidebar-layout.ts";
 
 type DashboardPane = TestChatPane & {
@@ -159,7 +159,7 @@ export function createDashboardHarness(
     pane.commitSidebarPanelResize(state.sidebarLayout, column!.id, 620);
   };
   const header = async () => {
-    render(
+    renderPaneHeaderInto(
       pane.renderPaneHeader(
         createPaneHeaderWorkspaceFixture(state),
         state.sessionsResult?.sessions[0],

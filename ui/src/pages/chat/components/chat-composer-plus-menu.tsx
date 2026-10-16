@@ -1,6 +1,5 @@
 import { createMemo, createUniqueId, Show, untrack } from "solid-js";
 import { pathForRoute } from "../../../app-route-paths.ts";
-import { icons } from "../../../components/icons.ts";
 import { Icon } from "../../../components/solid/icon.tsx";
 import {
   Menu,
@@ -23,7 +22,7 @@ import {
 import { uploadsEnabled } from "../../../lib/uploads.ts";
 import { handleChatAttachmentMenuSelection } from "./chat-attachment-inputs.ts";
 import { useSingleAttachmentPicker } from "./chat-attachment-picker-policy.ts";
-import { LitContent } from "./chat-composer-interop.tsx";
+import { ComposerContent } from "./chat-composer-content.tsx";
 import {
   handleComposerLibrarySelection,
   composerLibraryMenuItems,
@@ -128,7 +127,7 @@ function rootItems(menu: ChatComposerPlusMenuContentProps): MenuEntry[] {
           : !menu.webSearchBaseEnabled
             ? t("chat.composer.menu.webSearchGloballyDisabled")
             : ""),
-      icon: icons.globe,
+      icon: "globe",
       checkbox: true,
     }),
     menuDivider("manage-divider"),
@@ -552,8 +551,8 @@ function PlusMenuSurface(props: { menu: ChatComposerPlusMenuContentProps }) {
           }}
         />
       </div>
-      <LitContent value={props.menu.addServerDialog} />
-      <LitContent value={props.menu.libraryDialog} />
+      <ComposerContent>{props.menu.addServerDialog}</ComposerContent>
+      <ComposerContent>{props.menu.libraryDialog}</ComposerContent>
     </>
   );
 }

@@ -5,7 +5,7 @@ import type { AssistantDockOwner } from "../app/assistant-dock.ts";
 import { chatInputOwnerForContext } from "../app/chat-input-owner.ts";
 import type { ApplicationContext } from "../app/context.ts";
 import {
-  LazyCustomElementRequestController,
+  createLazyCustomElementRequests,
   isOptionalElementDefined,
 } from "../app/lazy-custom-element.ts";
 import { listSelectableAgents } from "../lib/agents/display.ts";
@@ -23,9 +23,9 @@ import {
   resolveUiConversationIdentity,
   resolveUiDefaultAgentId,
 } from "../lib/sessions/session-key.ts";
+import { SubscriptionsController } from "../lib/subscriptions-controller.ts";
 import type { SolidBridgeElement } from "../lit/solid-bridge.ts";
 import type { SolidController, SolidControllerHost } from "../lit/solid-controller-host.ts";
-import { SubscriptionsController } from "../lit/subscriptions-controller.ts";
 import { getSafeLocalStorage } from "../local-storage.ts";
 import {
   CHAT_ROUTE_READY_EVENT,
@@ -115,7 +115,7 @@ export class AssistantPanelController {
   /** Built-in target a plugin dock replaced; restored when that dock closes. */
   private builtInDestination: "home" | "custodian" = "custodian";
   private publishedSessionKey: string | null = null;
-  readonly contentLoader = new LazyCustomElementRequestController(this);
+  readonly contentLoader = createLazyCustomElementRequests(this);
 
   readonly dockLayout: DockLayoutController<"bottom" | "right">;
   private readonly onToggleRequest = (event: Event) => this.handleToggleRequest(event);
@@ -132,6 +132,7 @@ export class AssistantPanelController {
     private controllerHost: SolidControllerHost,
     private application?: ApplicationContext,
   ) {
+    this.contentLoader.subscribe(() => this.requestUpdate());
     this.dockLayout = new DockLayoutController(this, {
       layout: assistantPanelLayout,
       reservationPrefix: "assistant",
