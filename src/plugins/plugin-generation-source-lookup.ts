@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import { hasErrnoCode } from "../infra/errno.js";
+import { normalizeWindowsPathPreservingCase } from "../infra/path-guards.js";
 import { isPathInside, relativePluginPathInsideRootSync } from "./path-safety.js";
 import { getPluginCache } from "./plugin-cache.js";
 import { PluginSourceRecoveryUnavailableError } from "./plugin-instance-error.js";
@@ -255,6 +256,29 @@ function copyRecoverySource({
       filter: (from, to) => {
         const fact = native?.references.get(from);
         if (!fact) {
+          if (fs.lstatSync(from).isSymbolicLink()) {
+            const resolved = path.resolve(path.dirname(from), fs.readlinkSync(from));
+            const target =
+              process.platform === "win32"
+                ? normalizeWindowsPathPreservingCase(resolved)
+                : resolved;
+            if (isPathInside(boundaryRoot, target)) {
+              // Windows junctions contain absolute targets even when created with
+              // relative paths. Recovery must not point back into retiring custody.
+              const relocated = path.join(recovery!.directory, path.relative(boundaryRoot, target));
+              fs.mkdirSync(path.dirname(to), { recursive: true });
+              fs.symlinkSync(
+                process.platform === "win32"
+                  ? relocated
+                  : path.relative(path.dirname(to), relocated),
+                to,
+                fs.statSync(from).isDirectory() ? "junction" : "file",
+              );
+              return false;
+            }
+          }
+          // External host links keep their existing policy; admitted native
+          // references use the validation and relocation branch below.
           return true;
         }
         const retained = { ...fact, sourceIdentity: fact.capturedIdentity };

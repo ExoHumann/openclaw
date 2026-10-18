@@ -1,5 +1,4 @@
 import { afterAll, afterEach, expect, it, vi } from "vitest";
-import { createDeferredCore } from "../shared/deferred.js";
 import { loadOpenClawPlugins, loadOpenClawPluginsAsync } from "./loader.js";
 import {
   cleanupPluginLoaderFixturesForTest,
@@ -9,6 +8,7 @@ import {
   writePlugin,
 } from "./loader.test-fixtures.js";
 import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
+import * as capture from "./plugin-generation-artifact.js";
 import * as preparation from "./plugin-generation-worker.js";
 import { withPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 
@@ -58,32 +58,21 @@ async function isolated<T>(run: () => Promise<T>) {
 
 it("waits for selected external source acquisition before publishing registrations", async () => {
   const { options } = fixture();
-  const entered = createDeferredCore();
-  const release = createDeferredCore();
-  const prepare = preparation.preparePluginGenerationArtifact;
+  const acquire = capture.capturePluginGenerationArtifact;
   let published = false;
-  vi.spyOn(preparation, "preparePluginGenerationArtifact").mockImplementation(async (params) => {
-    entered.resolve();
-    await release.promise;
-    return prepare(params);
-  });
+  const acquisition = vi
+    .spyOn(capture, "capturePluginGenerationArtifact")
+    .mockImplementation((...args) => {
+      expect(published).toBe(false);
+      return acquire(...args);
+    });
   await isolated(async () => {
     const loading = loadOpenClawPluginsAsync(options).then((registry) => {
       published = true;
       return registry;
     });
-    try {
-      await Promise.race([
-        entered.promise,
-        loading.then(() => {
-          throw new Error("Registry published before source acquisition");
-        }),
-      ]);
-      expect(published).toBe(false);
-    } finally {
-      release.resolve();
-    }
     const registry = await loading;
+    expect(acquisition).toHaveBeenCalledTimes(2);
     expect(registry.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
     expect(registry.plugins.every((plugin) => plugin.status === "loaded")).toBe(true);
   });
@@ -91,12 +80,12 @@ it("waits for selected external source acquisition before publishing registratio
 
 it("records acquisition failure for one plugin and still loads its sibling", async () => {
   const { first, second, options } = fixture();
-  const prepare = preparation.preparePluginGenerationArtifact;
-  vi.spyOn(preparation, "preparePluginGenerationArtifact").mockImplementation(async (params) => {
-    if (params.rootDir === first.dir) {
+  const acquire = capture.capturePluginGenerationArtifact;
+  vi.spyOn(capture, "capturePluginGenerationArtifact").mockImplementation((...args) => {
+    if (args[0] === first.dir) {
       throw new Error("source acquisition failed");
     }
-    return prepare(params);
+    return acquire(...args);
   });
   await isolated(async () => {
     const registry = await loadOpenClawPluginsAsync(options);
@@ -121,11 +110,26 @@ it("reuses a loaded registry without reacquiring its external sources", async ()
   const { options } = fixture();
   await isolated(async () => {
     const first = await loadOpenClawPluginsAsync(options);
-    vi.spyOn(preparation, "preparePluginGenerationArtifact").mockRejectedValue(
-      new Error("new acquisition unavailable"),
-    );
+    vi.spyOn(capture, "capturePluginGenerationArtifact").mockImplementation(() => {
+      throw new Error("new acquisition unavailable");
+    });
     const second = await loadOpenClawPluginsAsync(options);
     expect(second).toBe(first);
     expect(second.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
+  });
+});
+
+it("rejects changed source before publishing its provider while loading its sibling", async () => {
+  const { first, second, options } = fixture();
+  await isolated(async () => {
+    const registry = await loadOpenClawPluginsAsync({
+      ...options,
+      expectedSourceDigests: { [first.id]: "0".repeat(64) },
+    });
+    expect(registry.plugins.find((plugin) => plugin.id === first.id)?.error).toMatch(
+      /source changed after installation/,
+    );
+    expect(registry.plugins.find((plugin) => plugin.id === second.id)?.status).toBe("loaded");
+    expect(registry.providers.map(({ provider }) => provider.label)).toEqual(["Second"]);
   });
 });

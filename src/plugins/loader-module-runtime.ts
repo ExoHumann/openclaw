@@ -178,40 +178,18 @@ export function createPluginModuleLoader(options: {
     });
   return Object.assign(load, {
     async prepare(modulePath: string, owner: Owner): Promise<void> {
-      // Compute workers already own retained native-ESM source captures. Keep their
-      // inline acquisition path so a prepared artifact cannot compete with that owner.
+      // Compute workers retain their own native-ESM capture. Runtime instances use
+      // the same inline owner as synchronous loading: synchronous module hooks
+      // must not make a worker round trip for every dependency operation.
       if (!isMainThread || owner.record.origin === "bundled" || getPluginInstance(owner.record)) {
         return;
       }
-      await withPluginCache(cache, async () => {
-        const { preparePluginGenerationArtifact } = await import("./plugin-generation-worker.js");
-        const preparedArtifact = await preparePluginGenerationArtifact({
-          rootDir: owner.rootDir,
-          source: modulePath,
-          standalone: owner.standalone,
-        });
+      withPluginCache(cache, () => {
         if (cache.retirement || isPluginRegistryRetired(owner.registry)) {
-          await preparedArtifact.artifact.disposeAsync();
           throw new Error("Plugin inventory has retired; begin a new plugin operation.");
         }
-        try {
-          // Reentrant loading may have installed this exact owner while acquisition
-          // yielded. Never replace its module identity with a second capture.
-          if (getPluginInstance(owner.record)) {
-            await preparedArtifact.artifact.disposeAsync();
-            return;
-          }
-          const instance = new PluginInstance(owner.record.id, owner);
-          instance.run(() =>
-            bindPluginInstanceModuleLoader({
-              ...binding(modulePath, owner, instance),
-              preparedArtifact,
-            }),
-          );
-        } catch (error) {
-          await preparedArtifact.artifact.disposeAsync();
-          throw error;
-        }
+        const instance = new PluginInstance(owner.record.id, owner);
+        instance.run(() => bindPluginInstanceModuleLoader(binding(modulePath, owner, instance)));
       });
     },
   });
