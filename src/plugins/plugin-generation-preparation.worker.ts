@@ -1,4 +1,4 @@
-import { receiveMessageOnPort, type MessagePort } from "node:worker_threads";
+import type { MessagePort } from "node:worker_threads";
 import { serveOwnedWorkerTasks } from "../infra/worker-task-server.js";
 import { withArtifactPreservingStateReads } from "../state/artifact-preserving-state-reads.js";
 import { withPluginInstallRoots } from "./install-root-context.js";
@@ -120,46 +120,6 @@ function observe(message: GenerationWorkerCallback): void {
       pending?.resolve(message.accepted === true);
     }
   }
-  if (message.kind === "native-load") {
-    recordPluginNativeLoad(message.filename);
-  }
-}
-function mapSource(captureId: number, filename: string): string {
-  if (!callbacks) {
-    return filename;
-  }
-  const id = ++nextCallback;
-  const signal = new Int32Array(new SharedArrayBuffer(4));
-  callbacks.postMessage(
-    {
-      kind: "mapping",
-      id,
-      captureId,
-      filename,
-      signal,
-    } satisfies GenerationWorkerCallback,
-    [],
-  );
-  const deadline = performance.now() + 15_000;
-  for (;;) {
-    // SAFETY: This private port is transferred only to the matching host callback protocol.
-    const message = receiveMessageOnPort(callbacks)?.message as
-      | GenerationWorkerCallback
-      | undefined;
-    if (message?.kind === "mapped" && message.id === id) {
-      if (message.error) {
-        throw new Error(message.error);
-      }
-      return message.filename ?? filename;
-    }
-    if (message) {
-      observe(message);
-    }
-    if (performance.now() > deadline) {
-      throw new Error("Plugin source mapping timed out");
-    }
-    Atomics.wait(signal, 0, 0, 2);
-  }
 }
 function scoped<T>(run: () => T): T {
   if (!context) {
@@ -235,11 +195,11 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
               command.rootDir,
               command.entryFile,
               (run) => run(),
-              command.custody ? undefined : (filename) => mapSource(command.captureId, filename),
               undefined,
               undefined,
               undefined,
-              command.custody,
+              undefined,
+              true,
             ),
           );
           const captureRecovery = artifact.captureRecoverySource.bind(artifact);
@@ -253,14 +213,10 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
             return custody;
           });
           failedCaptures.push(artifact);
-          if (command.custody) {
-            const custody = artifact.retainSourceCustody();
-            failedCaptures.push(custody.source);
-            result = custody;
-            await artifact.disposeAsync();
-          } else {
-            result = artifact;
-          }
+          const custody = artifact.retainSourceCustody();
+          failedCaptures.push(custody.source);
+          result = custody;
+          await artifact.disposeAsync();
         } else if (command.operation === "call") {
           if (command.asynchronous) {
             await settlePluginNativeAdmissions();

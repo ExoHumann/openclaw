@@ -1,3 +1,4 @@
+import path from "node:path";
 import { MessageChannel, receiveMessageOnPort } from "node:worker_threads";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
@@ -10,7 +11,6 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { isArtifactPreservingStateRead } from "../state/artifact-preserving-state-reads.js";
 import { resolveActivePluginInstallRoots } from "./install-root-context.js";
-import type { PluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import type { PluginSourceCustodyFork } from "./plugin-generation-source-lookup.js";
 import { GenerationCodec } from "./plugin-generation-worker-codec.js";
 import type {
@@ -30,10 +30,6 @@ import { resolvePluginSourceCaptureStorage } from "./plugin-source-capture-conte
 import { createPluginSourceCaptureRoot } from "./plugin-source-capture-directory.js";
 import { subscribePluginNativeLoads } from "./plugin-source-capture-native-loads.js";
 
-export type PreparedPluginGenerationArtifact = {
-  artifact: PluginGenerationArtifact;
-  attachModuleSource(callback: (filename: string) => string): void;
-};
 type PreparationParameters = { rootDir: string; source: string; standalone?: boolean };
 type PreparationOwner = { closing: boolean; clients: Set<() => Promise<void>> };
 const preparationOwners = resolveGlobalSingleton(
@@ -68,22 +64,6 @@ function preparationOwnerFor(source: RetainedNativeWorkerSource): PreparationOwn
 export async function preparePluginGenerationSource(
   params: PreparationParameters,
 ): Promise<PluginSourceCustodyFork> {
-  return (await preparePluginGenerationResource({
-    ...params,
-    custody: true,
-  })) as PluginSourceCustodyFork;
-}
-
-/** Each exposed artifact owns its capture worker; registry instance caching owns reuse. */
-export async function preparePluginGenerationArtifact(
-  params: PreparationParameters,
-): Promise<PreparedPluginGenerationArtifact> {
-  return (await preparePluginGenerationResource(params)) as PreparedPluginGenerationArtifact;
-}
-
-async function preparePluginGenerationResource(
-  params: PreparationParameters & { custody?: true },
-): Promise<PreparedPluginGenerationArtifact | PluginSourceCustodyFork> {
   const nativeSource = captureRetainedNativeWorkerSource({ runtimeGeneration: undefined });
   const owner = preparationOwnerFor(nativeSource);
   const storage = resolvePluginSourceCaptureStorage();
@@ -93,6 +73,8 @@ async function preparePluginGenerationResource(
   });
   const readOnly = isArtifactPreservingStateRead();
   const admission = nativeAdmissionStateFor();
+  const admissionRoot = path.resolve(params.rootDir);
+  const admissionOwner = admission.owners.get(admissionRoot);
   const root = createPluginSourceCaptureRoot(
     storage.stateDir,
     "plugin-preparation-",
@@ -101,7 +83,6 @@ async function preparePluginGenerationResource(
   let releasedRoot: Promise<void> | undefined;
   const releaseRoot = () => (releasedRoot ??= root.release());
   const { port1, port2 } = new MessageChannel();
-  let moduleSource: ((filename: string) => string) | undefined;
   let resources = 0;
   let pending = 0;
   let drained: ReturnType<typeof createDeferredCore<void>> | undefined;
@@ -141,26 +122,7 @@ async function preparePluginGenerationResource(
               error: String(error),
             } satisfies GenerationWorkerCallback),
         );
-      return;
     }
-    if (message.kind !== "mapping") {
-      return;
-    }
-    let filename: string | undefined;
-    let error: string | undefined;
-    try {
-      filename = moduleSource?.(message.filename) ?? message.filename;
-    } catch (failure) {
-      error = failure instanceof Error ? failure.message : String(failure);
-    }
-    port1.postMessage({
-      kind: "mapped",
-      id: message.id,
-      filename,
-      error,
-    } satisfies GenerationWorkerCallback);
-    Atomics.store(message.signal, 0, 1);
-    Atomics.notify(message.signal, 0);
   }
   port1.on("message", callback);
   port1.unref();
@@ -171,7 +133,7 @@ async function preparePluginGenerationResource(
         if (pending) {
           await (drained ??= createDeferredCore()).promise;
         }
-        // Retained artifacts and recovery leases belong to the worker; dispose
+        // Retained source custody and recovery leases belong to the worker; dispose
         // them before the pool joins its physical execution lifetime.
         await pool.closeResources();
         await pool.close();
@@ -317,8 +279,6 @@ async function preparePluginGenerationResource(
   try {
     const artifact = await request({
       operation: "capture",
-      captureId: 1,
-      custody: params.custody,
       rootDir: params.rootDir,
       entryFile: params.standalone ? params.source : undefined,
       storage,
@@ -328,43 +288,37 @@ async function preparePluginGenerationResource(
       managedRoot: root.managedRoot,
       callbackPort: port2,
       admission: {
-        owners: admission.owners,
+        // One artifact uses one owner; shared native indexes still serve dependencies outside it.
+        owners: new Map(admissionOwner ? [[admissionRoot, admissionOwner]] : []),
         managedRoots: admission.managedRoots,
-        receipts: admission.receipts,
+        receipts: new Map(
+          [...admission.receipts].filter(([key]) => key.startsWith(`${admissionRoot}\0`)),
+        ),
         files: admission.files,
         namespaces: admission.namespaces,
       },
     });
-    if (params.custody) {
-      // SAFETY: Custody capture returns the existing source owner's fork and content facts.
-      const retained = artifact as PluginSourceCustodyFork;
-      const source = retained.source;
-      const local = createPluginSourceCaptureState({
-        directory: source.sourceCapture.directory,
-        outputRoot: source.sourceCapture.outputRoot,
-        assertAvailable() {
-          if (closing || owner.closing) {
-            throw new Error("Plugin preparation worker has closed");
-          }
-        },
-        dispose: () => source.dispose(),
-        disposeAsync: () => source.disposeAsync(),
-      });
-      return {
-        ...retained,
-        source: {
-          ...source,
-          sourceCapture: local,
-          dispose: () => local.dispose(),
-          disposeAsync: () => local.disposeAsync(),
-        },
-      };
-    }
+    // SAFETY: Custody capture returns the existing source owner's fork and content facts.
+    const retained = artifact as PluginSourceCustodyFork;
+    const source = retained.source;
+    const local = createPluginSourceCaptureState({
+      directory: source.sourceCapture.directory,
+      outputRoot: source.sourceCapture.outputRoot,
+      assertAvailable() {
+        if (closing || owner.closing) {
+          throw new Error("Plugin preparation worker has closed");
+        }
+      },
+      dispose: () => source.dispose(),
+      disposeAsync: () => source.disposeAsync(),
+    });
     return {
-      // SAFETY: A successful capture reply encodes the worker's PluginGenerationArtifact.
-      artifact: artifact as PluginGenerationArtifact,
-      attachModuleSource: (mapper) => {
-        moduleSource = mapper;
+      ...retained,
+      source: {
+        ...source,
+        sourceCapture: local,
+        dispose: () => local.dispose(),
+        disposeAsync: () => local.disposeAsync(),
       },
     };
   } catch (error) {

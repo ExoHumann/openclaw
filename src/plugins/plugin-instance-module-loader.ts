@@ -248,7 +248,6 @@ function* bindPluginInstanceModuleLoaderSteps(
   const reusedArtifact = retained?.artifact;
   let artifact: PluginGenerationArtifact;
   try {
-    params.preparedArtifact?.attachModuleSource(moduleSource);
     params.preparedSource?.source.native?.retain(cache);
     const captureArgs: Parameters<typeof capturePluginGenerationArtifact> = [
       params.rootDir,
@@ -261,7 +260,6 @@ function* bindPluginInstanceModuleLoaderSteps(
     ];
     artifact =
       reusedArtifact ??
-      params.preparedArtifact?.artifact ??
       (params.preparedSource
         ? yield* capturePreparedPluginGenerationArtifactSteps(...captureArgs)
         : capturePluginGenerationArtifact(...captureArgs));

@@ -8,8 +8,6 @@ import type { PluginSourceAdmissionPublication } from "./plugin-source-admission
 export type GenerationWorkerInput = (
   | {
       operation: "capture";
-      captureId: number;
-      custody?: true;
       rootDir: string;
       entryFile?: string;
       storage: PluginSourceCaptureStorage;
@@ -32,7 +30,4 @@ export type GenerationWorkerReply = (
 ) & { released?: number[] };
 export type GenerationWorkerCallback =
   | { kind: "publish"; id: number; publication: PluginSourceAdmissionPublication }
-  | { kind: "published"; id: number; accepted?: boolean; error?: string }
-  | { kind: "mapping"; id: number; captureId: number; filename: string; signal: Int32Array }
-  | { kind: "mapped"; id: number; filename?: string; error?: string }
-  | { kind: "native-load"; filename: string };
+  | { kind: "published"; id: number; accepted?: boolean; error?: string };

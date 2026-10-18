@@ -1,8 +1,5 @@
 import type { PluginModuleLoader } from "./plugin-cache-artifacts.js";
-import type {
-  capturePluginGenerationArtifact,
-  PluginGenerationArtifact,
-} from "./plugin-generation-artifact.js";
+import type { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
 import type {
   PluginRecoverySource,
   PluginSourceCustodyFork,
@@ -28,10 +25,6 @@ export type PluginInstanceModuleLoaderParams = {
   recoverySourceMap?: (source: string) => string;
   nativeRecovery?: PluginNativeRecovery;
   preparedSource?: PluginSourceCustodyFork;
-  preparedArtifact?: {
-    artifact: PluginGenerationArtifact;
-    attachModuleSource: (resolve: (filename: string) => string) => void;
-  };
 };
 
 type RecoveryLoadFacts = Pick<
