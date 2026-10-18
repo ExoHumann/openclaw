@@ -11,6 +11,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { isArtifactPreservingStateRead } from "../state/artifact-preserving-state-reads.js";
 import { resolveActivePluginInstallRoots } from "./install-root-context.js";
 import type { PluginGenerationArtifact } from "./plugin-generation-artifact.js";
+import type { PluginSourceCustodyFork } from "./plugin-generation-source-lookup.js";
 import { GenerationCodec } from "./plugin-generation-worker-codec.js";
 import type {
   GenerationWorkerInput,
@@ -23,6 +24,7 @@ import {
   nativeAdmissionStateFor,
   type PluginNativeAdmissionTransfer,
 } from "./plugin-native-admission-state.js";
+import { createPluginSourceCaptureState } from "./plugin-package-metadata-capture.js";
 import { createPluginSourceAdmissionPublisher } from "./plugin-source-admission-store.js";
 import { resolvePluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 import { createPluginSourceCaptureRoot } from "./plugin-source-capture-directory.js";
@@ -62,10 +64,26 @@ function preparationOwnerFor(source: RetainedNativeWorkerSource): PreparationOwn
   return owner;
 }
 
+/** Retain prepared bytes while the instance owns local acquisition and loader hooks. */
+export async function preparePluginGenerationSource(
+  params: PreparationParameters,
+): Promise<PluginSourceCustodyFork> {
+  return (await preparePluginGenerationResource({
+    ...params,
+    custody: true,
+  })) as PluginSourceCustodyFork;
+}
+
 /** Each exposed artifact owns its capture worker; registry instance caching owns reuse. */
 export async function preparePluginGenerationArtifact(
   params: PreparationParameters,
 ): Promise<PreparedPluginGenerationArtifact> {
+  return (await preparePluginGenerationResource(params)) as PreparedPluginGenerationArtifact;
+}
+
+async function preparePluginGenerationResource(
+  params: PreparationParameters & { custody?: true },
+): Promise<PreparedPluginGenerationArtifact | PluginSourceCustodyFork> {
   const nativeSource = captureRetainedNativeWorkerSource({ runtimeGeneration: undefined });
   const owner = preparationOwnerFor(nativeSource);
   const storage = resolvePluginSourceCaptureStorage();
@@ -300,6 +318,7 @@ export async function preparePluginGenerationArtifact(
     const artifact = await request({
       operation: "capture",
       captureId: 1,
+      custody: params.custody,
       rootDir: params.rootDir,
       entryFile: params.standalone ? params.source : undefined,
       storage,
@@ -316,6 +335,31 @@ export async function preparePluginGenerationArtifact(
         namespaces: admission.namespaces,
       },
     });
+    if (params.custody) {
+      // SAFETY: Custody capture returns the existing source owner's fork and content facts.
+      const retained = artifact as PluginSourceCustodyFork;
+      const source = retained.source;
+      const local = createPluginSourceCaptureState({
+        directory: source.sourceCapture.directory,
+        outputRoot: source.sourceCapture.outputRoot,
+        assertAvailable() {
+          if (closing || owner.closing) {
+            throw new Error("Plugin preparation worker has closed");
+          }
+        },
+        dispose: () => source.dispose(),
+        disposeAsync: () => source.disposeAsync(),
+      });
+      return {
+        ...retained,
+        source: {
+          ...source,
+          sourceCapture: local,
+          dispose: () => local.dispose(),
+          disposeAsync: () => local.disposeAsync(),
+        },
+      };
+    }
     return {
       // SAFETY: A successful capture reply encodes the worker's PluginGenerationArtifact.
       artifact: artifact as PluginGenerationArtifact,

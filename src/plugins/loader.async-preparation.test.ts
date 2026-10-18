@@ -1,4 +1,5 @@
 import { afterAll, afterEach, expect, it, vi } from "vitest";
+import * as moduleRuntime from "./loader-module-runtime.js";
 import { loadOpenClawPlugins, loadOpenClawPluginsAsync } from "./loader.js";
 import {
   cleanupPluginLoaderFixturesForTest,
@@ -56,37 +57,69 @@ async function isolated<T>(run: () => Promise<T>) {
   }
 }
 
-it("waits for selected external source acquisition before publishing registrations", async () => {
-  const { options } = fixture();
-  const acquire = capture.capturePluginGenerationArtifact;
-  let published = false;
-  const acquisition = vi
-    .spyOn(capture, "capturePluginGenerationArtifact")
-    .mockImplementation((...args) => {
-      expect(published).toBe(false);
-      return acquire(...args);
-    });
+it("waits for each external acquisition before executing its registration", async () => {
+  const { first, second, options } = fixture();
+  const gates = [first, second].map(({ id }) => ({
+    id,
+    entered: Promise.withResolvers<void>(),
+    release: Promise.withResolvers<void>(),
+  }));
+  const createLoader = moduleRuntime.createPluginModuleLoader;
+  vi.spyOn(moduleRuntime, "createPluginModuleLoader").mockImplementation((...args) => {
+    const loader = createLoader(...args);
+    const prepare = loader.prepare.bind(loader);
+    loader.prepare = async (source, owner) => {
+      const gate = gates.find(({ id }) => id === owner.record.id);
+      if (gate) {
+        gate.entered.resolve();
+        await gate.release.promise;
+      }
+      await prepare(source, owner);
+    };
+    return loader;
+  });
+  const registrations = vi.spyOn(moduleRuntime, "runPluginRegisterSyncInRegistry");
+  const registeredIds = () => registrations.mock.calls.map((call) => call[3]);
   await isolated(async () => {
-    const loading = loadOpenClawPluginsAsync(options).then((registry) => {
-      published = true;
-      return registry;
-    });
-    const registry = await loading;
-    expect(acquisition).toHaveBeenCalledTimes(2);
-    expect(registry.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
-    expect(registry.plugins.every((plugin) => plugin.status === "loaded")).toBe(true);
+    const loading = loadOpenClawPluginsAsync(options);
+    try {
+      await gates[0].entered.promise;
+      // Let a caller that incorrectly ignores preparation advance to registration.
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(registeredIds()).toEqual([]);
+      gates[0].release.resolve();
+      await gates[1].entered.promise;
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+      expect(registeredIds()).toEqual([first.id]);
+      gates[1].release.resolve();
+      const registry = await loading;
+      expect(registeredIds()).toEqual([first.id, second.id]);
+      expect(registry.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
+      expect(registry.plugins.every((plugin) => plugin.status === "loaded")).toBe(true);
+    } finally {
+      for (const gate of gates) {
+        gate.release.resolve();
+      }
+      await loading;
+    }
   });
 });
 
 it("records acquisition failure for one plugin and still loads its sibling", async () => {
   const { first, second, options } = fixture();
-  const acquire = capture.capturePluginGenerationArtifact;
-  vi.spyOn(capture, "capturePluginGenerationArtifact").mockImplementation((...args) => {
-    if (args[0] === first.dir) {
-      throw new Error("source acquisition failed");
-    }
-    return acquire(...args);
-  });
+  const acquire = capture.capturePreparedPluginGenerationArtifactSteps;
+  vi.spyOn(capture, "capturePreparedPluginGenerationArtifactSteps").mockImplementation(
+    (...args) => {
+      if (args[0] === first.dir) {
+        throw new Error("source acquisition failed");
+      }
+      return acquire(...args);
+    },
+  );
   await isolated(async () => {
     const registry = await loadOpenClawPluginsAsync(options);
     expect(registry.plugins.find((plugin) => plugin.id === first.id)?.status).toBe("error");
@@ -97,7 +130,7 @@ it("records acquisition failure for one plugin and still loads its sibling", asy
 
 it("keeps synchronous CLI loading independent of worker acquisition", async () => {
   const { options } = fixture();
-  vi.spyOn(preparation, "preparePluginGenerationArtifact").mockRejectedValue(
+  vi.spyOn(preparation, "preparePluginGenerationSource").mockRejectedValue(
     new Error("worker unavailable"),
   );
   await isolated(async () => {
@@ -110,7 +143,7 @@ it("reuses a loaded registry without reacquiring its external sources", async ()
   const { options } = fixture();
   await isolated(async () => {
     const first = await loadOpenClawPluginsAsync(options);
-    vi.spyOn(capture, "capturePluginGenerationArtifact").mockImplementation(() => {
+    vi.spyOn(capture, "capturePreparedPluginGenerationArtifactSteps").mockImplementation(() => {
       throw new Error("new acquisition unavailable");
     });
     const second = await loadOpenClawPluginsAsync(options);

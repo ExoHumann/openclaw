@@ -4,7 +4,10 @@ import { VERSION } from "../version.js";
 import { runPluginRegistration } from "./api-lifecycle.js";
 import { tryNativeRequireModule } from "./native-module-require.js";
 import { getPluginCache, withPluginCache } from "./plugin-cache.js";
-import { bindPluginInstanceModuleLoader } from "./plugin-instance-module-loader.js";
+import {
+  bindPluginInstanceModuleLoader,
+  bindPluginInstanceModuleLoaderAsync,
+} from "./plugin-instance-module-loader.js";
 import { getPluginInstance, getPluginValueInstance } from "./plugin-instance-scope.js";
 import { PluginInstance } from "./plugin-instance.js";
 import { withProfile } from "./plugin-load-profile.js";
@@ -178,18 +181,42 @@ export function createPluginModuleLoader(options: {
     });
   return Object.assign(load, {
     async prepare(modulePath: string, owner: Owner): Promise<void> {
-      // Compute workers retain their own native-ESM capture. Runtime instances use
-      // the same inline owner as synchronous loading: synchronous module hooks
-      // must not make a worker round trip for every dependency operation.
       if (!isMainThread || owner.record.origin === "bundled" || getPluginInstance(owner.record)) {
         return;
       }
-      withPluginCache(cache, () => {
-        if (cache.retirement || isPluginRegistryRetired(owner.registry)) {
-          throw new Error("Plugin inventory has retired; begin a new plugin operation.");
+      await withPluginCache(cache, async () => {
+        const { preparePluginGenerationSource } = await import("./plugin-generation-worker.js");
+        const preparedSource = await preparePluginGenerationSource({
+          rootDir: owner.rootDir,
+          source: modulePath,
+          standalone: owner.standalone,
+        });
+        try {
+          if (cache.retirement || isPluginRegistryRetired(owner.registry)) {
+            throw new Error("Plugin inventory has retired; begin a new plugin operation.");
+          }
+          if (getPluginInstance(owner.record)) {
+            await preparedSource.source.disposeAsync();
+            return;
+          }
+          const instance = new PluginInstance(owner.record.id, owner);
+          await instance.run(() =>
+            bindPluginInstanceModuleLoaderAsync(
+              {
+                ...binding(modulePath, owner, instance),
+                preparedSource,
+              },
+              () => {
+                if (cache.retirement || isPluginRegistryRetired(owner.registry)) {
+                  throw new Error("Plugin inventory has retired; begin a new plugin operation.");
+                }
+              },
+            ),
+          );
+        } catch (error) {
+          await preparedSource.source.disposeAsync();
+          throw error;
         }
-        const instance = new PluginInstance(owner.record.id, owner);
-        instance.run(() => bindPluginInstanceModuleLoader(binding(modulePath, owner, instance)));
       });
     },
   });

@@ -3,7 +3,10 @@ import type {
   capturePluginGenerationArtifact,
   PluginGenerationArtifact,
 } from "./plugin-generation-artifact.js";
-import type { PluginRecoverySource } from "./plugin-generation-source-lookup.js";
+import type {
+  PluginRecoverySource,
+  PluginSourceCustodyFork,
+} from "./plugin-generation-source-lookup.js";
 import type {
   PluginModuleLoaderOwner,
   PluginModuleLoaderRecovery,
@@ -24,6 +27,7 @@ export type PluginInstanceModuleLoaderParams = {
   createHostModuleLoader?: () => PluginModuleLoader;
   recoverySourceMap?: (source: string) => string;
   nativeRecovery?: PluginNativeRecovery;
+  preparedSource?: PluginSourceCustodyFork;
   preparedArtifact?: {
     artifact: PluginGenerationArtifact;
     attachModuleSource: (resolve: (filename: string) => string) => void;

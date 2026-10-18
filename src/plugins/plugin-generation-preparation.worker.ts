@@ -210,7 +210,7 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
         recordPluginNativeLoad(filename);
       }
       let result: unknown;
-      let failedCapture: Resource | undefined;
+      const failedCaptures: Resource[] = [];
       try {
         if (command.operation === "capture") {
           const state = nativeAdmissionStateFor();
@@ -235,7 +235,11 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
               command.rootDir,
               command.entryFile,
               (run) => run(),
-              (filename) => mapSource(command.captureId, filename),
+              command.custody ? undefined : (filename) => mapSource(command.captureId, filename),
+              undefined,
+              undefined,
+              undefined,
+              command.custody,
             ),
           );
           const captureRecovery = artifact.captureRecoverySource.bind(artifact);
@@ -248,8 +252,15 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
             ownRecovery(custody.source);
             return custody;
           });
-          failedCapture = artifact;
-          result = artifact;
+          failedCaptures.push(artifact);
+          if (command.custody) {
+            const custody = artifact.retainSourceCustody();
+            failedCaptures.push(custody.source);
+            result = custody;
+            await artifact.disposeAsync();
+          } else {
+            result = artifact;
+          }
         } else if (command.operation === "call") {
           if (command.asynchronous) {
             await settlePluginNativeAdmissions();
@@ -274,7 +285,7 @@ serveOwnedWorkerTasks<GenerationWorkerReply>(
         };
       } catch (error) {
         let failure = error;
-        if (failedCapture) {
+        for (const failedCapture of failedCaptures.toReversed()) {
           try {
             await failedCapture.disposeAsync();
           } catch (cleanupError) {

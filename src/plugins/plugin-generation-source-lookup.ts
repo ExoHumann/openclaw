@@ -99,7 +99,16 @@ export function createPluginGenerationCapture<
     ]
   ) => T,
 ) {
-  return (...args: PluginGenerationCaptureArguments): T => {
+  return (
+    ...args: [
+      ...PluginGenerationCaptureArguments,
+      retained?: PluginSourceCustodyFork,
+      captureForCustody?: boolean,
+    ]
+  ): T => {
+    if (args[6] || args[7]) {
+      return create(...args);
+    }
     const [rootDir, entryFile, execute, moduleSource, nativeRecovery, dependencyLookupBoundary] =
       args;
     const custody =

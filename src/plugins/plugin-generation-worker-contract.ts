@@ -9,6 +9,7 @@ export type GenerationWorkerInput = (
   | {
       operation: "capture";
       captureId: number;
+      custody?: true;
       rootDir: string;
       entryFile?: string;
       storage: PluginSourceCaptureStorage;

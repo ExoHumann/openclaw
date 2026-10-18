@@ -17,7 +17,13 @@ import { writePersistedInstalledPluginIndex } from "./installed-plugin-index-sto
 import { readPersistedInstalledPluginIndex } from "./installed-plugin-index-store.js";
 import { createPluginCache, retirePluginCache, withPluginCache } from "./plugin-cache.js";
 import { createFixture } from "./plugin-generation-artifact.admission.test-support.js";
-import { preparePluginGenerationArtifact } from "./plugin-generation-worker.js";
+import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js";
+import {
+  preparePluginGenerationArtifact,
+  preparePluginGenerationSource,
+} from "./plugin-generation-worker.js";
+import { bindPluginInstanceModuleLoaderAsync } from "./plugin-instance-module-loader.js";
+import { PluginInstance } from "./plugin-instance.js";
 import { preparePluginNativeAdmissions } from "./plugin-native-admission-state.js";
 import { withPluginSourceAdmissionPublisher } from "./plugin-source-admission-context.js";
 import { withPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
@@ -113,52 +119,72 @@ it("finishes a capture after more than two minutes without retiring its worker",
   }
 });
 
-it("publishes native admission to pinned install roots while capture storage is redirected", async () => {
-  await withOpenClawTestState({ label: "worker-pinned-admission" }, async (state) => {
-    const fixture = createFixture(state.path("installed"), false);
-    const roots = { ...resolvePluginInstallRoots(state.env), stateDir: state.path("operator") };
-    const cache = createPluginCache();
-    await writePersistedInstalledPluginIndex(fixture.index, { stateDir: roots.stateDir });
-    await writePersistedInstalledPluginIndex(fixture.index, { stateDir: state.stateDir });
-    try {
-      await withPluginCache(cache, () =>
-        withPluginInstallRoots(roots, () =>
-          withPluginSourceCaptureStorage(
-            { stateDir: state.stateDir, placement: "temporary" },
-            async () => {
-              preparePluginNativeAdmissions(fixture.index, cache);
-              const prepared = await preparePluginGenerationArtifact({
-                rootDir: fixture.root,
-                source: fixture.entry,
-              });
-              try {
-                expect(fs.existsSync(state.statePath("tmp", "plugin-captures"))).toBe(false);
-                const captured = fs.realpathSync(prepared.artifact.resolve(fixture.filename));
-                expect(fs.readFileSync(captured).equals(fixture.bytes)).toBe(true);
-                const persisted = await readPersistedInstalledPluginIndex({
-                  stateDir: roots.stateDir,
-                });
-                const receipt = Object.values(persisted?.plugins[0]?.sourceAdmissions ?? {})[0];
-                expect(receipt?.nativeArtifacts[fixture.filename]?.capturedPath).toBe(captured);
-                const redirected = await readPersistedInstalledPluginIndex({
-                  stateDir: state.stateDir,
-                });
-                expect(Object.keys(redirected?.plugins[0]?.sourceAdmissions ?? {})).toHaveLength(0);
-              } finally {
-                await prepared.artifact.disposeAsync();
-              }
-            },
+it.each(["artifact", "custody"] as const)(
+  "publishes native admission to pinned install roots while capture storage is redirected (%s)",
+  async (mode) => {
+    await withOpenClawTestState({ label: "worker-pinned-admission" }, async (state) => {
+      const fixture = createFixture(state.path("installed"), false);
+      const roots = { ...resolvePluginInstallRoots(state.env), stateDir: state.path("operator") };
+      const cache = createPluginCache();
+      await writePersistedInstalledPluginIndex(fixture.index, { stateDir: roots.stateDir });
+      await writePersistedInstalledPluginIndex(fixture.index, { stateDir: state.stateDir });
+      try {
+        await withPluginCache(cache, () =>
+          withPluginInstallRoots(roots, () =>
+            withPluginSourceCaptureStorage(
+              { stateDir: state.stateDir, placement: "temporary" },
+              async () => {
+                preparePluginNativeAdmissions(fixture.index, cache);
+                const params = { rootDir: fixture.root, source: fixture.entry };
+                const prepared =
+                  mode === "artifact"
+                    ? await preparePluginGenerationArtifact(params)
+                    : await (async () => {
+                        const retained = await preparePluginGenerationSource(params);
+                        retained.source.native?.retain(cache);
+                        return {
+                          artifact: capturePluginGenerationArtifact(
+                            fixture.root,
+                            undefined,
+                            (run) => run(),
+                            undefined,
+                            undefined,
+                            undefined,
+                            retained,
+                          ),
+                        };
+                      })();
+                try {
+                  expect(fs.existsSync(state.statePath("tmp", "plugin-captures"))).toBe(false);
+                  const captured = fs.realpathSync(prepared.artifact.resolve(fixture.filename));
+                  expect(fs.readFileSync(captured).equals(fixture.bytes)).toBe(true);
+                  const persisted = await readPersistedInstalledPluginIndex({
+                    stateDir: roots.stateDir,
+                  });
+                  const receipt = Object.values(persisted?.plugins[0]?.sourceAdmissions ?? {})[0];
+                  expect(receipt?.nativeArtifacts[fixture.filename]?.capturedPath).toBe(captured);
+                  const redirected = await readPersistedInstalledPluginIndex({
+                    stateDir: state.stateDir,
+                  });
+                  expect(Object.keys(redirected?.plugins[0]?.sourceAdmissions ?? {})).toHaveLength(
+                    0,
+                  );
+                } finally {
+                  await prepared.artifact.disposeAsync();
+                }
+              },
+            ),
           ),
-        ),
-      );
-    } finally {
-      await retirePluginCache(cache);
-      await closeOpenClawStateDatabaseByPathAsync(
-        resolveOpenClawStateSqlitePath({ ...state.env, OPENCLAW_STATE_DIR: roots.stateDir }),
-      );
-    }
-  });
-});
+        );
+      } finally {
+        await retirePluginCache(cache);
+        await closeOpenClawStateDatabaseByPathAsync(
+          resolveOpenClawStateSqlitePath({ ...state.env, OPENCLAW_STATE_DIR: roots.stateDir }),
+        );
+      }
+    });
+  },
+);
 
 it.each(["capture", "custody", "fork"] as const)(
   "keeps %s recovery alive beyond the short RPC deadline and owner disposal",
@@ -341,3 +367,128 @@ it("isolates an active artifact from a sibling capture waiting on host publicati
     await retirePluginCache(siblingCache);
   }
 });
+
+it.each([false, true])(
+  "retained source builds local hooks and rejects changed copied bytes (tampered=%s)",
+  async (tampered) => {
+    const root = fs.realpathSync(temp.make("plugin-generation-local-custody-"));
+    const source = path.join(root, "source");
+    fs.mkdirSync(source);
+    fs.writeFileSync(path.join(source, "package.json"), '{"name":"local-custody","type":"module"}');
+    const entry = path.join(source, "index.js");
+    fs.writeFileSync(entry, "export const value = 42;");
+    await withArtifactPreservingStateReads(() =>
+      withPluginSourceCaptureStorage({ stateDir: root, placement: "temporary" }, async () => {
+        const retained = await preparePluginGenerationSource({ rootDir: source, source: entry });
+        const directory = retained.source.sourceCapture.directory;
+        let artifact: ReturnType<typeof capturePluginGenerationArtifact> | undefined;
+        try {
+          expect(retained.files.size).toBeGreaterThan(0);
+          if (tampered) {
+            fs.writeFileSync(retained.source.resolve(entry), "export const value = 99;");
+            expect(() =>
+              capturePluginGenerationArtifact(
+                source,
+                undefined,
+                (run) => run(),
+                undefined,
+                undefined,
+                undefined,
+                retained,
+              ),
+            ).toThrow(/source changed/);
+            return;
+          }
+          artifact = capturePluginGenerationArtifact(
+            source,
+            undefined,
+            (run) => run(),
+            undefined,
+            undefined,
+            undefined,
+            retained,
+          );
+          const captured = artifact.resolve(entry);
+          expect(fs.readFileSync(captured, "utf8")).toContain("42");
+          artifact.prepareModule(captured);
+          expect(artifact.moduleFacts(captured)).toBeDefined();
+          await closeDefaultRetainedNativeWorkerSource();
+          expect(() => artifact!.assertModuleAvailable(captured)).toThrow(
+            "Plugin preparation worker has closed",
+          );
+        } finally {
+          await (artifact ?? retained.source).disposeAsync();
+        }
+        expect(fs.existsSync(directory)).toBe(false);
+      }),
+    );
+  },
+);
+
+it.each([false, true])(
+  "cooperative binding yields and rejects retirement before publication (%s)",
+  async (retired) => {
+    const root = fs.realpathSync(temp.make("cooperative-binding-"));
+    const source = path.join(root, "source");
+    fs.mkdirSync(source);
+    fs.writeFileSync(
+      path.join(source, "package.json"),
+      '{"name":"cooperative-binding","type":"commonjs"}',
+    );
+    const entry = path.join(source, "index.cjs");
+    fs.writeFileSync(entry, "module.exports = 42;");
+    for (let i = 0; i < 65; i++) {
+      fs.writeFileSync(path.join(source, `leaf-${i}.cjs`), "module.exports = 1;");
+    }
+    const cache = createPluginCache();
+    const instance = new PluginInstance("cooperative-binding", { cache });
+    try {
+      await withArtifactPreservingStateReads(() =>
+        withPluginCache(cache, () =>
+          withPluginSourceCaptureStorage({ stateDir: root, placement: "temporary" }, async () => {
+            const preparedSource = await preparePluginGenerationSource({
+              rootDir: source,
+              source: entry,
+            });
+            const directory = preparedSource.source.sourceCapture.directory;
+            let served = false;
+            const callback = nextTurn().then(() => {
+              served = true;
+            });
+            const binding = instance.run(() =>
+              bindPluginInstanceModuleLoaderAsync(
+                {
+                  instance,
+                  origin: "workspace",
+                  source: entry,
+                  rootDir: source,
+                  preparedSource,
+                },
+                () => {
+                  if (retired) {
+                    throw new Error("synthetic retirement");
+                  }
+                },
+              ),
+            );
+            if (retired) {
+              await expect(binding).rejects.toThrow("synthetic retirement");
+              await preparedSource.source.disposeAsync();
+              expect(fs.existsSync(directory)).toBe(false);
+              expect(instance.sourceDigest).toBeUndefined();
+            } else {
+              await binding;
+              expect(served).toBe(true);
+              expect(instance.sourceDigest).toBeTypeOf("string");
+              expect(instance.loadModule(entry)).toBe(42);
+            }
+            await callback;
+          }),
+        ),
+      );
+    } finally {
+      await instance.dispose();
+      await retirePluginCache(cache);
+    }
+  },
+);

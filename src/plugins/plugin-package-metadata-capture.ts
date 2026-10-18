@@ -659,10 +659,38 @@ export function createPluginSourceCapture() {
     }
     throw error;
   }
+  return createPluginSourceCaptureState({
+    directory,
+    outputRoot: override?.managedRoot ?? instance?.managedRoot,
+    dispose() {
+      if (!retainLoadedPluginSourceCapture(directory)) {
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+      instance?.release();
+    },
+    async disposeAsync() {
+      if (!retainLoadedPluginSourceCapture(directory)) {
+        await fsPromises.rm(directory, { recursive: true, force: true });
+      }
+      await instance?.releaseAsync();
+    },
+  });
+}
+
+/** Local acquisition state uses one directory owner's cleanup, including a retained worker lease. */
+export function createPluginSourceCaptureState(owner: {
+  assertAvailable?(): void;
+  directory: string;
+  outputRoot?: string;
+  dispose(): void;
+  disposeAsync(): Promise<void>;
+}) {
+  const { directory } = owner;
   const additions = new Set<string>();
   const captureFailures = new Map<string, unknown>();
   let disposed = false;
   const acquire = <T>(capture: () => T) => {
+    owner.assertAvailable?.();
     if (disposed) {
       throw new Error("Plugin module capture has been disposed");
     }
@@ -680,6 +708,7 @@ export function createPluginSourceCapture() {
     }
   };
   const assertModuleAvailable = (filename: string) => {
+    owner.assertAvailable?.();
     if (captureFailures.has(filename)) {
       throw captureFailures.get(filename);
     }
@@ -702,7 +731,7 @@ export function createPluginSourceCapture() {
     capture: acquire,
     assertModuleAvailable,
     directory,
-    outputRoot: override?.managedRoot ?? instance?.managedRoot,
+    outputRoot: owner.outputRoot,
     linkHost: (hostRoot: string) => {
       const modules = path.join(directory, "node_modules");
       fs.mkdirSync(modules, { recursive: true, mode: 0o700 });
@@ -711,17 +740,11 @@ export function createPluginSourceCapture() {
     },
     dispose() {
       beginDisposal();
-      if (!retainLoadedPluginSourceCapture(directory)) {
-        fs.rmSync(directory, { recursive: true, force: true });
-      }
-      instance?.release();
+      owner.dispose();
     },
     async disposeAsync() {
       beginDisposal();
-      if (!retainLoadedPluginSourceCapture(directory)) {
-        await fsPromises.rm(directory, { recursive: true, force: true });
-      }
-      await instance?.releaseAsync();
+      await owner.disposeAsync();
     },
   };
 }
