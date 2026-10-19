@@ -13,13 +13,13 @@ jobs:
       run:
         shell: pwsh
     env:
-      SOURCE_SHA: 1cddad979e77cafc21d447c9d366451b52a66805
+      SOURCE_SHA: 3a79375b5f79519b15274c0f998eaa9fce7eb496
       OPENCLAW_LOCAL_CHECK_MODE: full
     steps:
       - name: Check out exact tested PR source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 1cddad979e77cafc21d447c9d366451b52a66805
+          ref: 3a79375b5f79519b15274c0f998eaa9fce7eb496
           persist-credentials: false
           fetch-depth: 1
       - name: Set up Node
@@ -39,11 +39,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build and verify complete package
         run: |
-          node scripts/package-openclaw-for-docker.mjs --output-dir .artifacts/pr-test-package --output-name openclaw-pr176192-1cddad979.tgz
+          node scripts/package-openclaw-for-docker.mjs --output-dir .artifacts/pr-test-package --output-name openclaw-pr176192-3a79375b5.tgz
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Install package in an isolated prefix and verify entry point
         run: |
-          $tarball = (Resolve-Path .artifacts/pr-test-package/openclaw-pr176192-1cddad979.tgz).Path
+          $tarball = (Resolve-Path .artifacts/pr-test-package/openclaw-pr176192-3a79375b5.tgz).Path
           $prefix = Join-Path $env:RUNNER_TEMP 'pr176192-installed'
           $state = Join-Path $env:RUNNER_TEMP 'pr176192-empty-state'
           New-Item -ItemType Directory -Path $prefix,$state -Force | Out-Null
@@ -91,7 +91,7 @@ jobs:
       - name: Upload verified installable test package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: openclaw-pr176192-1cddad979-windows
+          name: openclaw-pr176192-3a79375b5-windows
           path: .artifacts/pr-test-package/
           if-no-files-found: error
           retention-days: 14
