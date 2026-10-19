@@ -19,6 +19,11 @@ import {
 } from "./plugin-source-capture-path.js";
 import { isPluginSourceEntry } from "./plugin-source-file.js";
 
+export {
+  findPluginCapturedPackage,
+  isPluginPackageFile,
+} from "./plugin-captured-package-lookup.js";
+
 export type PluginDependencyResolution = { root: string; lookupDirectory: string };
 
 export function createPluginDependencyResolver(lookupBoundary?: {
@@ -387,50 +392,6 @@ export type PluginPackageCapture = {
   materialize(entry?: string): void;
   captureTarget(filename: string): void;
 };
-
-export const isPluginPackageFile = (root: string, file: string) =>
-  isPathInside(root, file) && !path.relative(root, file).split(path.sep).includes("node_modules");
-
-function isCapturedPathInside(root: string, file: string): boolean {
-  return process.platform === "win32"
-    ? isPathInside(root, file)
-    : file === root ||
-        (file.startsWith(root) && (root.endsWith("/") || file.charCodeAt(root.length) === 47));
-}
-
-function isCapturedPackageFile(root: string, file: string): boolean {
-  if (process.platform === "win32") {
-    return isPluginPackageFile(root, file);
-  }
-  return (
-    isCapturedPathInside(root, file) &&
-    !/(?:^|\/)node_modules(?:\/|$)/u.test(file.slice(root.length))
-  );
-}
-
-/** Retain the matched lookup root; dependency links need their own source-relative mapping. */
-export function findPluginCapturedPackage(
-  packages: ReadonlyMap<string, PluginPackageCapture>,
-  filename: string,
-  directory: string,
-) {
-  // The artifact producer normalizes its directory, captured roots, and dependency links.
-  const file = process.platform === "win32" ? filename : path.resolve(filename);
-  if (!isCapturedPathInside(directory, file)) {
-    return undefined;
-  }
-  for (const owner of packages.values()) {
-    if (isCapturedPackageFile(owner.capturedRoot, file)) {
-      return { owner, root: owner.capturedRoot };
-    }
-    for (const root of owner.links) {
-      if (isCapturedPackageFile(root, file)) {
-        return { owner, root };
-      }
-    }
-  }
-  return undefined;
-}
 
 /** Captured metadata and declared target preparation share the artifact lifetime. */
 export function createPluginPackageMetadataCapture(params: {

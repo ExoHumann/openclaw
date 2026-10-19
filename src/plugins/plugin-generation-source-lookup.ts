@@ -428,6 +428,7 @@ export function createPluginGenerationModuleLookup({
   captureExecutableFile,
   executable,
   packages,
+  capturedOwners,
   directory,
 }: {
   capturedPaths: Map<string, string>;
@@ -439,10 +440,11 @@ export function createPluginGenerationModuleLookup({
   captureExecutableFile: (filename: string) => string | undefined;
   executable: boolean;
   packages: ReadonlyMap<string, PluginPackageCapture>;
+  capturedOwners: ReadonlyMap<string, PluginPackageCapture>;
   directory: string;
 }) {
   const packageForFile = (filename: string) =>
-    findPluginCapturedPackage(packages, filename, directory)?.owner;
+    findPluginCapturedPackage(packages, filename, directory, capturedOwners)?.owner;
   return {
     boundaryRoot: directory,
     sourceForCaptured: (file: string) => originalSources.get(path.resolve(file)),
@@ -495,7 +497,7 @@ export function createPluginGenerationModuleLookup({
         return known;
       }
       return captureAdmitted(() => {
-        const captured = findPluginCapturedPackage(packages, filename, directory);
+        const captured = findPluginCapturedPackage(packages, filename, directory, capturedOwners);
         // import.meta.url can name a deferred peer through a private dependency link.
         const original = captured
           ? path.join(captured.owner.sourceRoot, path.relative(captured.root, filename))

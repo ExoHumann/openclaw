@@ -109,8 +109,9 @@ export function* createPluginGenerationArtifactSteps(
   const sourceCapture = retained?.source.sourceCapture ?? createPluginSourceCapture();
   const directory = sourceCapture.directory;
   const packages = new Map<string, PluginPackageCapture>();
+  const capturedOwners = new Map<string, PluginPackageCapture>();
   const packageForFile = (filename: string) =>
-    findPluginCapturedPackage(packages, filename, directory)?.owner;
+    findPluginCapturedPackage(packages, filename, directory, capturedOwners)?.owner;
   const capturedPaths = new Map<string, string>();
   const originalSources = new Map<string, string>();
   const hardlinkedSources = new Set<string>();
@@ -230,6 +231,7 @@ export function* createPluginGenerationArtifactSteps(
       receipt,
       retained,
       sourceFacts: sourceFacts.files,
+      onCapturedPath: (target) => capturedOwners.set(target, owner),
       onPackageMetadata(source, target) {
         metadataCapture.record(target, (manifest) => {
           for (const alias of importTargetNames(manifest.imports)) {
@@ -662,7 +664,10 @@ export function* createPluginGenerationArtifactSteps(
     nativeAdmission.finish(initialReceipt);
     additions.clear();
     const captures = [moduleCaptures, hardlinkedSources, metadataCapture, packages, resolution];
-    const clearCaptures = () => captures.forEach((capture) => capture.clear());
+    const clearCaptures = () => {
+      capturedOwners.clear();
+      captures.forEach((capture) => capture.clear());
+    };
     const sourceLookup = createPluginGenerationSourceLookup({
       rootDir,
       sourceRoot,
@@ -697,6 +702,7 @@ export function* createPluginGenerationArtifactSteps(
         captureExecutableFile,
         executable: Boolean(execute),
         packages,
+        capturedOwners,
         directory,
       }),
       dispose: () => {
