@@ -1,6 +1,10 @@
 import path from "node:path";
 import { isPathInside } from "../infra/path-guards.js";
-import type { PluginPackageCapture } from "./plugin-package-metadata-capture.js";
+type CapturedPackageOwner = {
+  sourceRoot: string;
+  capturedRoot: string;
+  links: ReadonlySet<string>;
+};
 export const isPluginPackageFile = (root: string, file: string) =>
   isPathInside(root, file) && !path.relative(root, file).split(path.sep).includes("node_modules");
 
@@ -22,11 +26,11 @@ function isCapturedPackageFile(root: string, file: string): boolean {
 }
 
 /** Retain the matched lookup root; dependency links need their own source-relative mapping. */
-export function findPluginCapturedPackage(
-  packages: ReadonlyMap<string, PluginPackageCapture>,
+export function findPluginCapturedPackage<Owner extends CapturedPackageOwner>(
+  packages: ReadonlyMap<string, Owner>,
   filename: string,
   directory: string,
-  capturedOwners?: ReadonlyMap<string, PluginPackageCapture>,
+  capturedOwners?: ReadonlyMap<string, Owner>,
 ) {
   // The artifact producer normalizes its directory, captured roots, and dependency links.
   const file = process.platform === "win32" ? filename : path.resolve(filename);
