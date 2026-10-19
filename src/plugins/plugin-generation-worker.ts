@@ -11,6 +11,7 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { isArtifactPreservingStateRead } from "../state/artifact-preserving-state-reads.js";
 import { resolveActivePluginInstallRoots } from "./install-root-context.js";
+import { createPluginGenerationNativeRoots } from "./plugin-generation-native-roots.js";
 import type { PluginSourceCustodyFork } from "./plugin-generation-source-lookup.js";
 import { GenerationCodec } from "./plugin-generation-worker-codec.js";
 import type {
@@ -22,6 +23,7 @@ import { PluginSourceRecoveryUnavailableError } from "./plugin-instance-error.js
 import {
   adoptPluginNativeAdmissions,
   nativeAdmissionStateFor,
+  settlePluginNativeAdmissionState,
   type PluginNativeAdmissionTransfer,
 } from "./plugin-native-admission-state.js";
 import { createPluginSourceCaptureState } from "./plugin-package-metadata-capture.js";
@@ -73,6 +75,7 @@ export async function preparePluginGenerationSource(
   });
   const readOnly = isArtifactPreservingStateRead();
   const admission = nativeAdmissionStateFor();
+  const nativeRoots = createPluginGenerationNativeRoots(storage);
   const admissionRoot = path.resolve(params.rootDir);
   const admissionOwner = admission.owners.get(admissionRoot);
   const root = createPluginSourceCaptureRoot(
@@ -81,7 +84,8 @@ export async function preparePluginGenerationSource(
     storage.placement,
   );
   let releasedRoot: Promise<void> | undefined;
-  const releaseRoot = () => (releasedRoot ??= root.release());
+  const releaseRoot = () =>
+    (releasedRoot ??= Promise.all([nativeRoots.close(), root.release()]).then(() => {}));
   const { port1, port2 } = new MessageChannel();
   let resources = 0;
   let pending = 0;
@@ -105,24 +109,21 @@ export async function preparePluginGenerationSource(
     }
   });
   function callback(message: GenerationWorkerCallback): void {
-    if (message.kind === "publish") {
-      void Promise.resolve()
-        .then(() => publishAdmission?.(message.publication) ?? false)
-        .then(
-          (accepted) =>
-            port1.postMessage({
-              kind: "published",
-              id: message.id,
-              accepted,
-            } satisfies GenerationWorkerCallback),
-          (error: unknown) =>
-            port1.postMessage({
-              kind: "published",
-              id: message.id,
-              error: String(error),
-            } satisfies GenerationWorkerCallback),
-        );
+    if (message.kind !== "native-root") {
+      return;
     }
+    const reply: Extract<GenerationWorkerCallback, { kind: "callback-result" }> = {
+      kind: "callback-result",
+      id: message.id,
+    };
+    try {
+      reply.root = nativeRoots.allocate();
+    } catch (failure) {
+      reply.error = failure instanceof Error ? failure.message : String(failure);
+    }
+    port1.postMessage(reply);
+    Atomics.store(message.signal, 0, 1);
+    Atomics.notify(message.signal, 0);
   }
   port1.on("message", callback);
   port1.unref();
@@ -137,6 +138,7 @@ export async function preparePluginGenerationSource(
         // them before the pool joins its physical execution lifetime.
         await pool.closeResources();
         await pool.close();
+        // Also release when construction failed before the pool registered custody.
         await releaseRoot();
         owner.clients.delete(close);
       } finally {
@@ -158,8 +160,11 @@ export async function preparePluginGenerationSource(
       };
       return asynchronous ? request(command) : requestSync(command, sourceCapture);
     },
-    () => {
-      throw new Error("Host-owned native leases must return to their original owner");
+    {
+      exportRoot: () => {
+        throw new Error("Host-owned native leases cannot enter plugin preparation");
+      },
+      importRoot: (id) => nativeRoots.retain(id),
     },
   );
   function accept(reply: GenerationWorkerReply): unknown {
@@ -178,6 +183,7 @@ export async function preparePluginGenerationSource(
         admission,
         // SAFETY: The matching worker encodes only PluginNativeAdmissionTransfer in this field.
         codec.decode(reply.admission) as PluginNativeAdmissionTransfer,
+        publishAdmission,
       );
     }
     return codec.decode(reply.value);
@@ -200,7 +206,11 @@ export async function preparePluginGenerationSource(
         },
       );
       pendingNativeLoads.clear();
-      return accept(await task.result);
+      const value = accept(await task.result);
+      // Async preparation/disposal joins the captured admission owner. Sync lazy
+      // imports only queue facts, so they cannot block the host's async writes.
+      await settlePluginNativeAdmissionState(admission);
+      return value;
     } finally {
       try {
         if (task) {

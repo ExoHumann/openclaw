@@ -1,5 +1,5 @@
 import type { JSX as SolidJSX } from "@solidjs/web";
-import { createEffect, createMemo, For, onCleanup, Show, untrack } from "solid-js";
+import { createMemo, For, onCleanup, Show, untrack } from "solid-js";
 import type { GatewayAgentRow } from "../api/types.ts";
 import {
   pathForAgentPanel,
@@ -74,6 +74,7 @@ export type CommandPaletteProps = {
   primaryModelSearch: boolean;
   modelSearchError: string | null;
   sessionSearchPending: boolean;
+  remoteSearchOffline: boolean;
   catalogSearchPending: boolean;
   sessionSearchFailed: boolean;
   sessionSearchPartial: boolean;
@@ -95,7 +96,7 @@ export type CommandPaletteProps = {
   onSlashCommand?: (command: string) => void;
   pluginIconUrls: Readonly<Record<string, string>>;
   onPluginIconError: (pluginId: string) => void;
-  onPluginIconVisible: (pluginId: string) => void;
+  registerPluginIcon: (readId: () => string) => () => void;
   desktopAvailable: boolean;
   custodianAvailable: boolean;
   onInputRef: (element: Element | undefined, previous?: HTMLTextAreaElement) => void;
@@ -278,6 +279,7 @@ function PaletteSearch(props: {
   const results = createMemo(() => resolvePaletteResults(current()));
   const notices = () =>
     [
+      current().remoteSearchOffline ? t("palette.searchOffline") : null,
       current().sessionSearchFailed
         ? t("palette.searchFailed")
         : current().sessionSearchIndexing
@@ -295,6 +297,7 @@ function PaletteSearch(props: {
     Boolean(current().searchQuery.trim()) &&
     !current().sessionSearchPending &&
     !current().catalogSearchPending &&
+    !current().remoteSearchOffline &&
     !current().modelSearchError &&
     !current().sessionSearchFailed &&
     !current().sessionSearchPartial &&
@@ -397,7 +400,7 @@ function PaletteSearch(props: {
                         identity={current().agentIdentity?.get(agentId())}
                         pluginIconUrls={current().pluginIconUrls}
                         onPluginIconError={current().onPluginIconError}
-                        onPluginIconVisible={current().onPluginIconVisible}
+                        registerPluginIcon={current().registerPluginIcon}
                       />
                     </div>
                   );
@@ -445,16 +448,8 @@ function PaletteSearch(props: {
 }
 
 export function CommandPaletteView(props: { readProps: () => CommandPaletteProps }) {
+  let initialInput!: HTMLTextAreaElement;
   const current = () => props.readProps();
-  createEffect(
-    () => [current().mentionMenu, current().draft.mentionDirectory] as const,
-    ([mentionMenu, directory]) => mentionMenu.syncDirectory(directory),
-  );
-  createEffect(
-    createMemo(() => current().mentionMenu.open),
-    () => current().onMentionChange(),
-    { defer: true },
-  );
   const results = createMemo(() => resolvePaletteResults(current()));
   const hideSearch = () => results().hideSearch;
   // The collapsing search remains mounted with its last presented projection.
@@ -474,6 +469,7 @@ export function CommandPaletteView(props: { readProps: () => CommandPaletteProps
   return (
     <>
       <openclaw-modal-dialog
+        prop:initialFocus={() => initialInput}
         class="cmd-palette-overlay palette"
         label={t("palette.placeholder")}
         style={COMMAND_PALETTE_DIALOG_STYLE}
@@ -482,7 +478,6 @@ export function CommandPaletteView(props: { readProps: () => CommandPaletteProps
             event.preventDefault();
             if (!current().composing) {
               current().mentionMenu.close();
-              current().onMentionChange();
             }
             return;
           }
@@ -499,6 +494,9 @@ export function CommandPaletteView(props: { readProps: () => CommandPaletteProps
           onKeyDown={(event) => handleKeydown(event, current, activeElement)}
         >
           <CommandPaletteInput
+            onAutofocusRef={(element) => {
+              initialInput = element;
+            }}
             value={current().query}
             placeholder={t("palette.placeholder")}
             onInputRef={current().onInputRef}

@@ -563,7 +563,10 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     observeList: (scope: SessionListScope, listener: (snapshot: SessionListSnapshot) => void) => {
       const entry = managedList(scope);
       return primaryWindows.observe(entry, listener, pageActive, host.connection, () =>
-        refreshManagedList(entry, { append: false, invalidated: true }),
+        refreshManagedList(
+          entry,
+          entry.snapshot.result ? { append: false, invalidated: true } : { append: false },
+        ),
       );
     },
     refreshList(this: void, options: SessionRefreshOptions = {}): Promise<void> {
@@ -668,27 +671,19 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
         (entry) => affected?.has(entry) ?? matchesAgent(entry.query.agentId),
         lastListOptions,
       );
-      if (options.primarySnapshotApplied) {
-        eventRefreshCoordinator.scheduleFallback();
-      } else if (options.affectsPrimary ?? matchesAgent(lastListOptions.agentId)) {
+      if (
+        !options.primarySnapshotApplied &&
+        (options.affectsPrimary ?? matchesAgent(lastListOptions.agentId))
+      ) {
         eventRefreshCoordinator.schedule();
       }
       if (affected) {
         scheduleManagedLists((entry) => affected.has(entry));
-        for (const entry of managedLists.values()) {
-          if (
-            !affected.has(entry) &&
-            entry.listeners.size > 0 &&
-            matchesAgent(entry.query.agentId)
-          ) {
-            entry.coordinator.scheduleFallback();
-          }
-        }
       } else {
         invalidateManagedLists(options.agentId);
       }
     },
-    reset() {
+    reset(retireData = false) {
       retireForegroundRefresh();
       primaryList = { scope: primaryList.scope };
       eventRefreshCoordinator.reset();
@@ -700,7 +695,16 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
           managedLists.delete(entry.key);
           continue;
         }
-        if (entry.snapshot.loading || entry.snapshot.error || entry.snapshot.startupPending) {
+        if (retireData) {
+          entry.receivedKeys.clear();
+          entry.retainedLimit = entry.query.limit;
+          entry.connectionEpoch = null;
+          publishManagedList(entry, { result: null, agentId: null, loading: false, error: null });
+        } else if (
+          entry.snapshot.loading ||
+          entry.snapshot.error ||
+          entry.snapshot.startupPending
+        ) {
           publishManagedList(entry, {
             ...entry.snapshot,
             loading: false,
