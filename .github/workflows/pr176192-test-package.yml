@@ -1,0 +1,97 @@
+name: PR 176192 test package
+on:
+  push:
+    branches: [codex/pr176192-test-package-20261019]
+permissions:
+  contents: read
+jobs:
+  package:
+    if: github.repository == 'ExoHumann/openclaw'
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      SOURCE_SHA: 1cddad979e77cafc21d447c9d366451b52a66805
+      OPENCLAW_LOCAL_CHECK_MODE: full
+    steps:
+      - name: Check out exact tested PR source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 1cddad979e77cafc21d447c9d366451b52a66805
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.21.0
+      - name: Install pinned package tools
+        run: |
+          npm install --global pnpm@12.12.1 npm@12.2.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --version
+          pnpm --version
+          npm --version
+      - name: Install locked dependencies
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build and verify complete package
+        run: |
+          node scripts/package-openclaw-for-docker.mjs --output-dir .artifacts/pr-test-package --output-name openclaw-pr176192-1cddad979.tgz
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install package in an isolated prefix and verify entry point
+        run: |
+          $tarball = (Resolve-Path .artifacts/pr-test-package/openclaw-pr176192-1cddad979.tgz).Path
+          $prefix = Join-Path $env:RUNNER_TEMP 'pr176192-installed'
+          $state = Join-Path $env:RUNNER_TEMP 'pr176192-empty-state'
+          New-Item -ItemType Directory -Path $prefix,$state -Force | Out-Null
+          $env:OPENCLAW_HOME = $state
+          $env:OPENCLAW_STATE_DIR = $state
+          $env:OPENCLAW_CONFIG_PATH = Join-Path $state 'openclaw.json'
+          npm install --prefix $prefix --no-audit --no-fund $tarball
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $entry = Join-Path $prefix 'node_modules/openclaw/openclaw.mjs'
+          node $entry --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $info = Get-Content (Join-Path $prefix 'node_modules/openclaw/dist/build-info.json') -Raw | ConvertFrom-Json
+          if ($info.commit -ne $env:SOURCE_SHA) { throw 'Installed package source does not match tested candidate' }
+          Copy-Item (Join-Path $prefix 'node_modules/openclaw/dist/build-info.json') .artifacts/pr-test-package/build-info.json
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tarball).Hash.ToLowerInvariant()
+          "$hash  $(Split-Path $tarball -Leaf)" | Set-Content .artifacts/pr-test-package/SHA256SUMS.txt
+          @{
+            repository = 'ExoHumann/openclaw'
+            sourceCommit = $env:SOURCE_SHA
+            upstreamMain = 'a38fd62531b1205850491b3e1032642f64c2e967'
+            workflowCommit = $env:GITHUB_SHA
+            runId = $env:GITHUB_RUN_ID
+            runAttempt = $env:GITHUB_RUN_ATTEMPT
+            node = (node --version)
+            sha256 = $hash
+            installedEntryPointPassed = $true
+            officialRelease = $false
+          } | ConvertTo-Json | Set-Content .artifacts/pr-test-package/provenance.json
+          @'
+          Unreleased PR #176192 test build, not the published OpenClaw 2026.10.5 release.
+          Verify SHA256SUMS.txt and provenance.json before installation.
+          Use Node 24.21.0 for both baseline and candidate to keep the runtime comparable.
+          Install to a separate prefix. Use a fresh isolated copy of the original baseline state,
+          config and plugin installations, and a separate port. Never alternate stable and PR
+          builds against the same state after migrations.
+          Run the installed entry point with config validate --json before starting Gateway.
+          If validation fails, retain the issue paths/messages locally and redact secrets before
+          sharing. Do not disable the startup guard or delete journals to force it through.
+          Then repeat the same startup, acpx reload and retained-state restart probes.
+          Record pre-listener refusals separately from post-success failures, HTTP 15-second
+          deadline misses, authenticated WebSocket RPC health, and reload completion time.
+          CI proves the complete build, package contract and installed CLI entry point;
+          it does not prove this package starts with your private configuration.
+          '@ | Set-Content .artifacts/pr-test-package/TESTING.txt
+      - name: Upload verified installable test package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: openclaw-pr176192-1cddad979-windows
+          path: .artifacts/pr-test-package/
+          if-no-files-found: error
+          retention-days: 14
