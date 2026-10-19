@@ -1,3 +1,4 @@
+import { performance } from "node:perf_hooks";
 import { afterAll, afterEach, expect, it, vi } from "vitest";
 import * as moduleRuntime from "./loader-module-runtime.js";
 import { loadOpenClawPlugins, loadOpenClawPluginsAsync } from "./loader.js";
@@ -64,6 +65,10 @@ it("waits for each external acquisition before executing its registration", asyn
     entered: Promise.withResolvers<void>(),
     release: Promise.withResolvers<void>(),
   }));
+  const detail = vi.fn();
+  const now = performance.now.bind(performance);
+  let preparationDelay = 0;
+  vi.spyOn(performance, "now").mockImplementation(() => now() + preparationDelay);
   const createLoader = moduleRuntime.createPluginModuleLoader;
   vi.spyOn(moduleRuntime, "createPluginModuleLoader").mockImplementation((...args) => {
     const loader = createLoader(...args);
@@ -73,6 +78,7 @@ it("waits for each external acquisition before executing its registration", asyn
       if (gate) {
         gate.entered.resolve();
         await gate.release.promise;
+        preparationDelay += 1_000;
       }
       await prepare(source, owner);
     };
@@ -81,7 +87,7 @@ it("waits for each external acquisition before executing its registration", asyn
   const registrations = vi.spyOn(moduleRuntime, "runPluginRegisterSyncInRegistry");
   const registeredIds = () => registrations.mock.calls.map((call) => call[3]);
   await isolated(async () => {
-    const loading = loadOpenClawPluginsAsync(options);
+    const loading = loadOpenClawPluginsAsync({ ...options, startupTrace: { detail } });
     try {
       await gates[0].entered.promise;
       // Let a caller that incorrectly ignores preparation advance to registration.
@@ -100,6 +106,13 @@ it("waits for each external acquisition before executing its registration", asyn
       expect(registeredIds()).toEqual([first.id, second.id]);
       expect(registry.providers.map(({ provider }) => provider.label)).toEqual(["First", "Second"]);
       expect(registry.plugins.every((plugin) => plugin.status === "loaded")).toBe(true);
+      for (const id of [first.id, second.id]) {
+        const metrics = Object.fromEntries(
+          detail.mock.calls.find(([name]) => name === `plugins.gateway-load.plugin.${id}`)![1],
+        );
+        expect(metrics.modulePreparationMs).toBeGreaterThanOrEqual(1_000);
+        expect(metrics.modulePreparationMs).toBeLessThanOrEqual(metrics.loadMs);
+      }
     } finally {
       for (const gate of gates) {
         gate.release.resolve();
