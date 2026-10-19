@@ -60,11 +60,12 @@ async function isolated<T>(run: () => Promise<T>) {
 
 it("waits for each external acquisition before executing its registration", async () => {
   const { first, second, options } = fixture();
-  const gates = [first, second].map(({ id }) => ({
+  const createGate = (id: string) => ({
     id,
     entered: Promise.withResolvers<void>(),
     release: Promise.withResolvers<void>(),
-  }));
+  });
+  const gates = [createGate(first.id), createGate(second.id)] as const;
   const detail = vi.fn();
   const now = performance.now.bind(performance);
   let preparationDelay = 0;
