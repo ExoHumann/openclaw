@@ -69,7 +69,7 @@ it("keeps default status concise and reports configured family choices without s
   expect(value).toContain("workboard: default=sqlite, override=postgres, effective=postgres");
   expect(value).toContain("quarantine: default=sqlite, override=fixed local, effective=sqlite");
   expect(value).not.toContain("secret");
-  expect(value).toContain("PostgreSQL is experimental");
+  expect(value).not.toContain("experimental");
 });
 
 it("shows the latest offsite attempt beside a newer local backup", () => {
@@ -159,6 +159,7 @@ it("builds status-all overview rows from the shared surface", () => {
     },
     summary: {
       ...params.summary,
+      modelReasoningWarning: "Model ollama/qwen3:4b emitted hidden reasoning; set reasoning:true.",
       secretEgressProxy: {
         state: "degraded",
         caExpiresAt: "2036-09-01T00:00:00.000Z",
@@ -204,6 +205,7 @@ it("builds status-all overview rows from the shared surface", () => {
     "Secret egress proxy": "Check OpenSSL, then retry the request.",
     "Degraded secrets": "1 degraded · capability:tts",
     "Degraded plugins": "1 configured-unavailable · discord",
+    "Model reasoning": "Model ollama/qwen3:4b emitted hidden reasoning; set reasoning:true.",
     Secrets: "2 diagnostics",
   });
 });

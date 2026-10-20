@@ -4,6 +4,7 @@ import { VERSION } from "../version.js";
 import { runPluginRegistration } from "./api-lifecycle.js";
 import { tryNativeRequireModule } from "./native-module-require.js";
 import { getPluginCache, withPluginCache } from "./plugin-cache.js";
+import { PluginInventoryRetiredError } from "./plugin-instance-error.js";
 import {
   bindPluginInstanceModuleLoader,
   bindPluginInstanceModuleLoaderAsync,
@@ -193,7 +194,7 @@ export function createPluginModuleLoader(options: {
         });
         try {
           if (cache.retirement || isPluginRegistryRetired(owner.registry)) {
-            throw new Error("Plugin inventory has retired; begin a new plugin operation.");
+            throw new PluginInventoryRetiredError();
           }
           if (getPluginInstance(owner.record)) {
             await preparedSource.source.disposeAsync();
@@ -208,7 +209,7 @@ export function createPluginModuleLoader(options: {
               },
               () => {
                 if (cache.retirement || isPluginRegistryRetired(owner.registry)) {
-                  throw new Error("Plugin inventory has retired; begin a new plugin operation.");
+                  throw new PluginInventoryRetiredError();
                 }
               },
             ),

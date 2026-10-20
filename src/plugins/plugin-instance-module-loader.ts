@@ -21,6 +21,7 @@ import {
   capturePreparedPluginGenerationArtifactSteps,
   type PluginGenerationArtifact,
 } from "./plugin-generation-artifact.js";
+import { PluginInventoryRetiredError } from "./plugin-instance-error.js";
 import { pluginInstanceInvocation } from "./plugin-instance-invocation.js";
 import { getPluginInstanceOwner } from "./plugin-instance-scope.js";
 import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
@@ -191,7 +192,7 @@ export async function bindPluginInstanceModuleLoaderAsync(
       continue;
     }
     if (getPluginCache().retirement) {
-      step = steps.throw(new Error("Plugin inventory retired during capture"));
+      step = steps.throw(new PluginInventoryRetiredError());
     } else {
       step = steps.next();
     }

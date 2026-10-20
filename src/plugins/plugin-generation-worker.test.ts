@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { queryObjects } from "node:v8";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -33,6 +34,27 @@ import type { PluginSourceAdmissionReceipt } from "./plugin-source-admission.typ
 import { withPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
+afterEach(() => vi.restoreAllMocks());
+
+const expectSource = (
+  source: { resolve(filename: string): string },
+  filename: string,
+  text = "fixture",
+) => expect(fs.readFileSync(source.resolve(filename), "utf8")).toContain(text);
+const withStorage = <T>(stateDir: string, run: () => T) =>
+  withPluginSourceCaptureStorage({ stateDir, placement: "temporary" }, run);
+function sourceFixture(version?: string) {
+  const root = fs.realpathSync(temp.make("plugin-generation-worker-"));
+  const source = path.join(root, "source");
+  fs.mkdirSync(source);
+  fs.writeFileSync(
+    path.join(source, "package.json"),
+    JSON.stringify({ name: "fixture", version, type: "module" }),
+  );
+  const entry = path.join(source, "index.js");
+  fs.writeFileSync(entry, "export const value = 42;");
+  return { root, source, entry };
+}
 
 // Exercise host reconstruction over real worker-owned custody, as the loader does.
 async function prepareArtifact(params: { rootDir: string; source: string }) {
@@ -490,6 +512,107 @@ it("keeps retained recovery forks beyond the short RPC deadline and source dispo
   );
 });
 
+it.each(["capture", "custody", "fork"] as const)(
+  "keeps %s recovery alive beyond the short RPC deadline and releases callback references",
+  async (operation) => {
+    const { root, source, entry } = sourceFixture("1.0.0");
+    await withArtifactPreservingStateReads(() =>
+      withStorage(root, async () => {
+        const retained = await preparePluginGenerationSource({ rootDir: source, source: entry });
+        let artifact: ReturnType<typeof capturePluginGenerationArtifact> | undefined;
+        let moduleFactCallbacks: WeakRef<object>[] | undefined;
+        try {
+          artifact = capturePluginGenerationArtifact(
+            source,
+            entry,
+            (run) => run(),
+            (filename) => filename,
+            undefined,
+            undefined,
+            retained,
+          );
+          expectSource(artifact, entry, "42");
+          if (operation === "capture") {
+            moduleFactCallbacks = (() => {
+              const capturedEntry = artifact!.resolve(entry);
+              artifact!.prepareModule(capturedEntry);
+              const facts = artifact!.moduleFacts(capturedEntry)!;
+              expect(facts.isRequireReference("./missing.js")).toBe(false);
+              return [
+                new WeakRef(facts.isRequireReference),
+                new WeakRef(facts.prepareDependency),
+                new WeakRef(facts.capture),
+              ];
+            })();
+            const replies = Array.from(
+              { length: 100 },
+              () => new WeakRef(artifact!.prepareModule(entry)),
+            );
+            const control = new WeakRef({});
+            await nextTurn();
+            queryObjects(WeakRef);
+            expect(control.deref()).toBeUndefined();
+            expect(replies.every((reply) => reply.deref() === undefined)).toBe(true);
+            expectSource(artifact, entry, "42");
+
+            const releaseRecovery = async () => {
+              const recovery = artifact!.captureRecoverySource();
+              const references = [
+                new WeakRef(recovery.fork),
+                new WeakRef(recovery.sourceCapture.capture),
+              ];
+              await recovery.disposeAsync();
+              return references;
+            };
+            const released = await releaseRecovery();
+            await nextTurn();
+            queryObjects(WeakRef);
+            expect(released.every((reference) => reference.deref() === undefined)).toBe(true);
+            expectSource(artifact, entry, "42");
+          }
+
+          // Recovery copies the captured package synchronously in the worker. Advance
+          // its host deadline clock without making this lifecycle proof sleep for 30s.
+          const parentRecovery =
+            operation === "fork" ? artifact.captureRecoverySource() : undefined;
+          const now = performance.now();
+          const clock = vi.spyOn(performance, "now").mockReturnValue(now + 30_001);
+          clock.mockReturnValueOnce(now);
+          let recovery: ReturnType<typeof artifact.captureRecoverySource>;
+          try {
+            recovery = parentRecovery
+              ? parentRecovery.fork()
+              : operation === "custody"
+                ? artifact.retainSourceCustody().source
+                : artifact.captureRecoverySource();
+          } finally {
+            clock.mockRestore();
+            await parentRecovery?.disposeAsync();
+          }
+          expectSource(artifact, entry, "42");
+          await artifact.disposeAsync();
+          artifact = undefined;
+          await nextTurn();
+          queryObjects(WeakRef);
+          const moduleFactsReleased = moduleFactCallbacks?.every((callback) => !callback.deref());
+          expectSource(recovery, entry, "42");
+          const recoveredEntry = recovery.resolve(entry);
+          await recovery.disposeAsync();
+          // Later rollback generations compose this path mapping after its producer retires.
+          expect(recovery.resolve(entry)).toBe(recoveredEntry);
+          expect(() => recovery.resolve(path.join(root, "outside.js"))).toThrow(
+            "Plugin recovery entry is outside its captured source package",
+          );
+          if (moduleFactCallbacks) {
+            expect(moduleFactsReleased).toBe(true);
+          }
+        } finally {
+          await (artifact ?? retained.source).disposeAsync();
+        }
+      }),
+    );
+  },
+);
 it("isolates active custody from a sibling capture waiting on host publication", async () => {
   const root = fs.realpathSync(temp.make("plugin-generation-worker-sibling-"));
   const fixture = createFixture(path.join(root, "installed"), false);

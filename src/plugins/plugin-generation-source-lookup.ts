@@ -257,8 +257,11 @@ function copyRecoverySource({
   let recovery: ReturnType<typeof createPluginSourceCapture> | undefined;
   try {
     recovery = createPluginSourceCapture();
+    const directory = recovery.directory;
+    const relocate = (filename: string) =>
+      path.join(directory, path.relative(boundaryRoot, filename));
     const hardlinkedTargets = new Map<string, PluginNativeArtifactFact>();
-    // Preserve relative dependency links without reopening an updated package.
+    // Keep dependency links within the new capture without reopening installed packages.
     fs.cpSync(boundaryRoot, recovery.directory, {
       recursive: true,
       verbatimSymlinks: true,
@@ -271,11 +274,12 @@ function copyRecoverySource({
               process.platform === "win32"
                 ? normalizeWindowsPathPreservingCase(resolved)
                 : resolved;
-            if (isPathInside(boundaryRoot, target)) {
+            const relative = relativePluginPathInsideRootSync(boundaryRoot, target);
+            if (relative !== undefined) {
               // Windows junctions contain absolute targets even when created with
               // relative paths. Recovery must not point back into retiring custody.
-              const relocated = path.join(recovery!.directory, path.relative(boundaryRoot, target));
-              fs.mkdirSync(path.dirname(to), { recursive: true });
+              const relocated = path.join(directory, relative);
+              fs.mkdirSync(path.dirname(to), { recursive: true, mode: 0o700 });
               fs.symlinkSync(
                 process.platform === "win32"
                   ? relocated
@@ -302,9 +306,6 @@ function copyRecoverySource({
     for (const [target, fact] of hardlinkedTargets) {
       assertReference(target, fact, native!.namespaces.get(fact.namespace)!);
     }
-    const directory = recovery.directory;
-    const relocate = (filename: string) =>
-      path.join(directory, path.relative(boundaryRoot, filename));
     const copiedSources = new Map(
       Array.from(sources, ([source, captured]) => [source, relocate(captured)]),
     );

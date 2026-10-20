@@ -24,13 +24,10 @@ const CLAWHUB_JSON_MAX_BYTES = 16 * 1024 * 1024;
 const CLAWHUB_ERROR_BODY_MAX_BYTES = 8 * 1024;
 const CLAWHUB_ERROR_BODY_MAX_CHARS = 400;
 
-export type ClawHubFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-
 export type ClawHubFetchOptions = {
   baseUrl?: string;
   token?: string;
   timeoutMs?: number;
-  fetchImpl?: ClawHubFetch;
 };
 
 export type ClawHubRequestParams = ClawHubFetchOptions & {
@@ -38,6 +35,7 @@ export type ClawHubRequestParams = ClawHubFetchOptions & {
   url?: string;
   method?: "GET" | "POST";
   json?: unknown;
+  form?: FormData;
   search?: Record<string, string | undefined>;
   skipAuth?: boolean;
   retryTransientReads?: boolean;
@@ -210,6 +208,9 @@ function buildUrl(params: Pick<ClawHubRequestParams, "baseUrl" | "path" | "searc
 type ClawHubResponse = Awaited<ReturnType<typeof requestClawHub>>;
 
 async function requestClawHub(params: ClawHubRequestParams) {
+  if (params.json !== undefined && params.form !== undefined) {
+    throw new Error("ClawHub requests cannot contain both JSON and multipart bodies");
+  }
   const url = buildUrl(params);
   const token = params.skipAuth
     ? undefined
@@ -229,6 +230,8 @@ async function requestClawHub(params: ClawHubRequestParams) {
   }
   if (params.json !== undefined) {
     init.body = JSON.stringify(params.json);
+  } else if (params.form !== undefined) {
+    init.body = params.form;
   }
   const request = async () => {
     const controller = new AbortController();
@@ -249,7 +252,7 @@ async function requestClawHub(params: ClawHubRequestParams) {
       }
     };
     try {
-      const response = await (params.fetchImpl ?? fetch)(url, {
+      const response = await fetch(url, {
         ...init,
         signal: controller.signal,
       });
